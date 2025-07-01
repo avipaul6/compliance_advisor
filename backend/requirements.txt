@@ -4,3 +4,4 @@ python-dotenv
 google-cloud-aiplatform
 pydantic
 gunicorn
+google-cloud-discoveryengine

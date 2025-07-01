@@ -1,17 +1,47 @@
-# main.py - Your Python Backend Server
+# main.py - Your Python Backend Server with real Vertex AI Integration
 import os
 import uuid
 import datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Literal, Union
+from typing import List, Optional, Dict, Literal
+
+import vertexai
+from vertexai.generative_models import GenerativeModel
+
+# Use the correct client for Vertex AI Search, which is in the discoveryengine library
+from google.cloud import discoveryengine_v1 as discoveryengine
+
+# --- TODO: PLEASE CONFIGURE THESE VALUES ---
+# Fill in your Google Cloud project details here.
+PROJECT_ID = "your-gcp-project-id"  # <-- Your Google Cloud Project ID
+LOCATION = "global"                 # For Discovery Engine, this is usually "global" or "us"
+DATA_STORE_ID = "your-vertex-ai-search-data-store-id" # <-- Your Vertex AI Search Data Store ID
+# --- END OF CONFIGURATION ---
+
+
+# --- Vertex AI Clients ---
+# Initialize Vertex AI SDK for Gemini - Use a region that supports the model
+vertexai.init(project=PROJECT_ID, location="us-central1") 
+
+# Initialize the Gemini model - Upgraded to flash as requested
+model = GenerativeModel("gemini-2.5-flash-preview-04-17") 
+
+# Initialize the Vertex AI Search (Discovery Engine) client
+search_client = discoveryengine.SearchServiceClient()
+
+# Construct the serving_config_path - THIS IS THE FIX.
+# The 'collection' argument is not used here.
+serving_config_path = search_client.serving_config_path(
+    project=PROJECT_ID,
+    location=LOCATION,
+    data_store=DATA_STORE_ID,
+    serving_config="default_config",
+)
+
 
 # --- Pydantic Models (Data Contracts with Frontend) ---
-# These models ensure that the data sent from your React app
-# matches the structure the backend expects. FastAPI uses them
-# for automatic validation and documentation.
-
 class DocumentMetadata(BaseModel):
     name: str
     type: str
@@ -117,11 +147,6 @@ class GapReviewRequest(BaseModel):
     allCompanyDocs: List[CompanyDocument]
     savedAnalyses: List[SavedAnalysis]
 
-class DeepDiveRequest(BaseModel):
-    docId: str
-    allCompanyDocs: List[CompanyDocument]
-    allAustracContent: List[AustracUpdate]
-
 class ChatMessage(BaseModel):
     sender: str
     text: str
@@ -141,242 +166,152 @@ class DraftRequest(BaseModel):
     changeToDraft: SuggestedChange
     originalDocument: CompanyDocument
 
+class DeepDiveRequest(BaseModel):
+    docId: str
+    allCompanyDocs: List[CompanyDocument]
+    allAustracContent: List[AustracUpdate]
 
 # --- FastAPI Application Setup ---
 app = FastAPI()
 
-# IMPORTANT: This enables CORS to allow your React frontend (running on a different port)
-# to communicate with this Python backend.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
 # --- API Endpoints ---
-
 @app.get("/api")
 def read_root():
     return {"message": "Vera: Virtual Regulation Assistant Backend is running!"}
 
+
 @app.post("/api/ingest")
 async def ingest_documents(request: IngestRequest):
-    """
-    Placeholder for document ingestion logic.
-    In a real app, this is where you would chunk the documents and
-    add them to a Vertex AI Search vector database.
-    """
     num_docs = len(request.documents)
-    print(f"Received {num_docs} documents for ingestion.")
-    
-    # TODO: Implement actual ingestion logic here.
-    # 1. Connect to your Vertex AI Search client.
-    # 2. For each document in `request.documents`:
-    #    a. Chunk the `doc.content`.
-    #    b. Create embeddings for each chunk.
-    #    c. Upsert the chunks and embeddings to your vector store.
-    
-    return {"success": True, "message": f"Successfully processed {num_docs} documents on the backend."}
+    print(f"Received {num_docs} documents for simulated ingestion.")
+    return {"success": True, "message": f"Backend acknowledged {num_docs} documents. In a real app, they would be processed by Vertex AI Search."}
+
+
+@app.post("/api/chat")
+async def chat_with_bot(request: ChatRequest):
+    print(f"Received chat message: {request.message}")
+
+    try:
+        # 1. Search Vertex AI Search (The "R" in RAG)
+        search_request = discoveryengine.SearchRequest(
+            serving_config=serving_config_path,
+            query=request.message,
+            page_size=5,
+            content_search_spec=discoveryengine.SearchRequest.ContentSearchSpec(
+                snippet_spec=discoveryengine.SearchRequest.ContentSearchSpec.SnippetSpec(
+                    return_snippet=True
+                ),
+                summary_spec=discoveryengine.SearchRequest.ContentSearchSpec.SummarySpec(
+                    summary_result_count=5,
+                    include_citations=True,
+                ),
+            ),
+        )
+        search_response = search_client.search(search_request)
+        
+        context_str = search_response.summary.summary_text
+        
+        # 2. Construct Prompt for Generation (The "G" in RAG)
+        chat_history_formatted = "\n".join(
+            [f"{msg.sender}: {msg.text}" for msg in request.history]
+        )
+        
+        prompt = f"""You are a compliance assistant chatbot named Vera. Your purpose is to help answer questions based on the user's uploaded documents.
+        
+        Use the following summary of retrieved document chunks to answer the user's question. If the context does not contain the answer, state that you could not find the information in the provided documents. Do not make up information. Always cite your sources using the format [number] from the summary.
+
+        **Retrieved Context Summary:**
+        {context_str}
+        
+        **Chat History:**
+        {chat_history_formatted}
+
+        **User's new question:** {request.message}
+        
+        **Your Answer:**
+        """
+
+        # 3. Call Gemini
+        response = model.generate_content(prompt)
+        
+        return {"text": response.text}
+
+    except Exception as e:
+        print(f"Error in chat endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/generate/gap-review", response_model=SavedAnalysis)
 async def generate_gap_review(request: GapReviewRequest):
-    """
-    Placeholder for the main Gap Review generation logic.
-    This simulates receiving document IDs, generating prompts,
-    calling Gemini, parsing the response, and returning a structured result.
-    """
-    print("Generating Gap Review...")
+    print("Generating Mock Gap Review...")
     target_docs = [doc for doc in request.allCompanyDocs if doc.id in request.companyDocIds]
-    target_regs = [reg for reg in request.allAustracContent if reg.id in request.targetRegulatoryIds]
-
-    if not target_docs or not target_regs:
-        raise HTTPException(status_code=400, detail="Missing company documents or regulatory inputs.")
-
-    # TODO: Implement the real Gap Review logic with Vertex AI Gemini.
-    # 1. Construct a detailed system prompt for the task.
-    # 2. Construct a user prompt containing the text content of the selected documents.
-    # 3. Call the Gemini model (`gemini-1.5-pro-preview-0409` or similar).
-    # 4. Request a JSON response from the model.
-    # 5. Parse the model's response into the `ChallengeAnalysisResult` structure.
-
-    # --- MOCK DATA ---
-    # This is placeholder data that mimics a real AI response.
-    # Replace this with the actual response from Gemini.
+    if not target_docs:
+        raise HTTPException(status_code=400, detail="Missing company documents.")
+        
     mock_change_id = str(uuid.uuid4())
-    mock_action_id = str(uuid.uuid4())
     doc_name = target_docs[0].name
     
     mock_result = ChallengeAnalysisResult(
         suggested_changes=[
-            SuggestedChange(
-                id=f"grsc-{mock_change_id}",
-                document_section="Section 3.1: Customer Identification",
-                current_status_summary="The current policy requires two forms of ID for verification.",
-                austrac_relevance="The new AUSTRAC guidance emphasizes the need for digital identity verification methods.",
-                suggested_modification="Incorporate a new sub-section for verifying customers using the Australian Government's Digital Identity Framework.",
-                priority="High",
-                source_document_name=doc_name
-            )
+            SuggestedChange(id=f"grsc-{mock_change_id}",document_section="Section 3.1: Customer Identification",current_status_summary="The current policy requires two forms of ID for verification.",austrac_relevance="The new AUSTRAC guidance emphasizes the need for digital identity verification methods.",suggested_modification="Incorporate a new sub-section for verifying customers using the Australian Government's Digital Identity Framework.",priority="High",source_document_name=doc_name)
         ],
-        action_plan=[
-            ActionPlanItem(
-                id=f"grap-{mock_action_id}",
-                task="Develop a new procedure for digital identity verification.",
-                responsible="Compliance Team Lead",
-                timeline="3 Months",
-                priority_level="High"
-            )
-        ],
-        groupedSuggestions={
-            doc_name: [
-                 SuggestedChange(
-                    id=f"grsc-{mock_change_id}",
-                    document_section="Section 3.1: Customer Identification",
-                    current_status_summary="The current policy requires two forms of ID for verification.",
-                    austrac_relevance="The new AUSTRAC guidance emphasizes the need for digital identity verification methods.",
-                    suggested_modification="Incorporate a new sub-section for verifying customers using the Australian Government's Digital Identity Framework.",
-                    priority="High",
-                    source_document_name=doc_name
-                )
-            ]
-        }
+        action_plan=[ActionPlanItem(id=f"grap-{uuid.uuid4()}",task="Develop a new procedure for digital identity verification.",responsible="Compliance Team Lead",timeline="3 Months",priority_level="High")],
+        groupedSuggestions={doc_name: [SuggestedChange(id=f"grsc-{mock_change_id}",document_section="Section 3.1: Customer Identification",current_status_summary="The current policy requires two forms of ID for verification.",austrac_relevance="The new AUSTRAC guidance emphasizes the need for digital identity verification methods.",suggested_modification="Incorporate a new sub-section for verifying customers using the Australian Government's Digital Identity Framework.",priority="High",source_document_name=doc_name)]}
     )
     
     analysis_id = str(uuid.uuid4())
     timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
     new_saved_analysis = SavedAnalysis(
         id=analysis_id,
-        name=f"Gap Review - {timestamp}",
+        name=f"Mock Gap Review - {timestamp}",
         timestamp=timestamp,
         type='challenge',
         challengeAnalysisResult=mock_result,
-        companyDocumentsUsedSnapshot=[{"id": d.id, "name": d.name} for d in target_docs],
-        austracInputsUsedSnapshot=[{"id": r.id, "title": r.title} for r in target_regs],
-        userPrompt="[This is a mock user prompt. In a real app, this would contain the document contents.]",
-        systemPrompt="[This is a mock system prompt. In a real app, this would contain instructions for the AI.]"
+        userPrompt="[This was a mock generation]",
+        systemPrompt="[This was a mock generation]"
     )
     
     return new_saved_analysis
 
 @app.post("/api/generate/deep-dive", response_model=SavedAnalysis)
 async def generate_deep_dive(request: DeepDiveRequest):
-    """
-    Placeholder for the Document Deep Dive generation logic.
-    """
     print(f"Generating Deep Dive for doc ID: {request.docId}")
     target_doc = next((doc for doc in request.allCompanyDocs if doc.id == request.docId), None)
-
     if not target_doc:
         raise HTTPException(status_code=404, detail="Document not found.")
 
-    # TODO: Implement real Deep Dive logic with Vertex AI Gemini and Google Search.
-    # 1. Create a system prompt for in-depth document analysis.
-    # 2. Create a user prompt with the document's text.
-    # 3. Use the `tools` parameter in your Gemini call to enable Google Search grounding.
-    # 4. Call the Gemini model.
-    # 5. Extract the text response and the grounding metadata (web sources).
-    # 6. Parse the response into the DeepDiveAnalysisResult structure.
-    
-    # --- MOCK DATA ---
     mock_result = DeepDiveAnalysisResult(
         documentTitleAnalyzed=target_doc.name,
-        overallSummary="This document is well-structured but could be enhanced with clearer definitions and examples related to sanctions screening.",
+        overallSummary="This document is well-structured but could be enhanced with clearer definitions for sanctions screening.",
         keyThemesAndTopics=["Onboarding", "Risk Assessment", "Sanctions Screening"],
-        suggested_changes=[
-            SuggestedChange(
-                id=f"ddsc-{uuid.uuid4()}",
-                document_section="Appendix A: Definitions",
-                current_status_summary="The definition for 'PEP' is outdated.",
-                austrac_relevance="Aligns with international standards for Politicaly Exposed Persons.",
-                suggested_modification="Update the definition of 'Politically Exposed Person (PEP)' to match the latest FATF guidance.",
-                priority='Medium'
-            )
-        ],
-        action_plan=[
-            ActionPlanItem(
-                id=f"ddap-{uuid.uuid4()}",
-                task="Schedule a review of all definitions in the glossary.",
-                responsible="Legal & Compliance",
-                timeline="Next Quarter",
-                priority_level='Low'
-            )
-        ],
-        referencedRegulatoryInputs=["Sample AUSTRAC Guidance Note.pdf"]
+        suggested_changes=[SuggestedChange(id=f"ddsc-{uuid.uuid4()}",document_section="Appendix A: Definitions",current_status_summary="The definition for 'PEP' is outdated.",austrac_relevance="Aligns with international standards for Politically Exposed Persons.",suggested_modification="Update the definition of 'Politically Exposed Person (PEP)' to match the latest FATF guidance.",priority='Medium')],
+        action_plan=[ActionPlanItem(id=f"ddap-{uuid.uuid4()}",task="Schedule a review of all definitions in the glossary.",responsible="Legal & Compliance",timeline="Next Quarter",priority_level='Low')],
     )
-
-    mock_grounding = GroundingMetadata(
-        groundingChunks=[
-            GroundingChunk(web=GroundingChunkWeb(uri="https://www.austrac.gov.au/business/core-guidance/customer-identification-and-verification", title="AUSTRAC - Customer Identification"))
-        ]
-    )
-
     analysis_id = str(uuid.uuid4())
     timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
     new_saved_analysis = SavedAnalysis(
         id=analysis_id,
-        name=f"Deep Dive on {target_doc.name}",
+        name=f"Mock Deep Dive on {target_doc.name}",
         timestamp=timestamp,
         type='deepDive',
         deepDiveAnalysisResult=mock_result,
-        selectedDocumentSnapshot={"id": target_doc.id, "name": target_doc.name},
-        groundingMetadata=mock_grounding,
-        userPrompt="[Mock User Prompt for Deep Dive]",
-        systemPrompt="[Mock System Prompt for Deep Dive]"
+        selectedDocumentSnapshot={"id": target_doc.id, "name": target_doc.name, "type": "pdf", "lastModified": 0, "size": 0},
     )
-
     return new_saved_analysis
-
-
-@app.post("/api/chat")
-async def chat_with_bot(request: ChatRequest):
-    """
-    Placeholder for the chatbot logic.
-    """
-    print(f"Received chat message: {request.message}")
-
-    # TODO: Implement real chat logic.
-    # 1. Build context from the request (documents, history, etc.).
-    # 2. Use a RAG approach:
-    #    a. Create an embedding for the user's message (`request.message`).
-    #    b. Query your vector database to find relevant document chunks.
-    # 3. Construct a prompt that includes the chat history, the user's message, and the retrieved chunks.
-    # 4. Call the Gemini model.
-    # 5. Return the model's text response.
-    
-    # --- MOCK RESPONSE ---
-    mock_response = {
-        "text": f"This is a mock response to your question: '{request.message}'. In a real application, I would use RAG to search the provided documents and give a detailed answer.",
-    }
-    return mock_response
-
 
 @app.post("/api/generate/draft")
 async def generate_draft(request: DraftRequest):
-    """
-    Placeholder for generating a rewritten document draft.
-    """
     print(f"Generating draft for change in '{request.changeToDraft.document_section}'")
-
-    # TODO: Implement real draft generation logic.
-    # 1. Create a prompt that includes:
-    #    a. The original document text (`request.originalDocument.textContent`).
-    #    b. The specific change to be made (`request.changeToDraft`).
-    # 2. Instruct the model to rewrite the *entire document* incorporating the change seamlessly.
-    # 3. Call the Gemini model.
-    # 4. Return the full rewritten text.
-    
-    # --- MOCK RESPONSE ---
     original_text = request.originalDocument.textContent
     suggestion = request.changeToDraft.suggested_modification
-    
-    new_draft = f"--- THIS IS A MOCK DRAFT ---\n\n"
-    new_draft += f"The following AI-generated text incorporates the suggestion: '{suggestion}'.\n\n"
-    new_draft += "--- START OF MODIFIED DOCUMENT ---\n\n"
-    new_draft += f"{original_text}\n\n... and furthermore, based on the suggestion, we have added this new paragraph: '{suggestion}'. This concludes the updated section.\n\n"
-    new_draft += "--- END OF MODIFIED DOCUMENT ---"
-
+    new_draft = f"--- THIS IS A MOCK DRAFT ---\n\n{original_text}\n\n... and furthermore, based on the suggestion, we have added this new paragraph: '{suggestion}'.\n\n--- END OF DRAFT ---"
     return {"newDraft": new_draft}
