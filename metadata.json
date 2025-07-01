@@ -1,6 +1,0 @@
-{
-  "name": "OFX Compliance Assistant",
-  "description": "An application to analyze AUSTRAC updates against company compliance documents, suggest changes, and provide an action plan using Gemini AI. It also features a compliance chatbot.",
-  "requestFramePermissions": [],
-  "prompt": ""
-}
