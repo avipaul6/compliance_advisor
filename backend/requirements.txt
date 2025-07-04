@@ -3,5 +3,6 @@ uvicorn[standard]
 python-dotenv
 google-cloud-aiplatform
 pydantic
+pydantic-settings
 gunicorn
 google-cloud-discoveryengine
