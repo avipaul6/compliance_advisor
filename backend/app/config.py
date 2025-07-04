@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     
     # API Configuration
     API_V1_STR: str = "/api/v1"
-    PROJECT_NAME: str = "Vera: Virtual Regulation Assistant"
+    PROJECT_NAME: str = "OFX Compliance Assistant"
     
     # CORS
     BACKEND_CORS_ORIGINS: list = ["http://localhost:3000", "http://127.0.0.1:3000"]

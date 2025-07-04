@@ -9,7 +9,7 @@ const Header: React.FC = () => {
         <div className="flex items-center space-x-3">
           {ICONS.checkCircle("w-10 h-10 text-orange-500")}
           <h1 className="text-2xl md:text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-orange-500 to-amber-500">
-            Vera: Virtual Regulation Assistant - OFX
+            OFX Compliance Assistant
           </h1>
         </div>
         <a 

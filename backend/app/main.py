@@ -5,7 +5,7 @@ from app.api.v1.api import api_router
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    description="Vera: Virtual Regulation Assistant Backend",
+    description="OFX Compliance Assistant Backend",
     version="1.0.0"
 )
 
