@@ -8,7 +8,7 @@ import {
 
 // Your Python backend's base URL.
 // For local development, this is likely http://localhost:8000 or http://127.0.0.1:8000
-const API_BASE_URL = '/api';
+const API_BASE_URL = '/api/v1';
 
 // Helper function for making API calls to the Python backend
 async function fetchFromApi<T>(endpoint: string, options: RequestInit): Promise<T> {
@@ -67,7 +67,7 @@ export const ingestDocumentsInBackend = async (
     }))
   };
 
-  return fetchFromApi<{ success: boolean; message: string }>('/ingest', {
+  return fetchFromApi<{ success: boolean; message: string }>('/documents/ingest', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
@@ -88,7 +88,7 @@ export const generateGapReviewInBackend = async (payload: {
     savedAnalyses: SavedAnalysis[]
 }): Promise<SavedAnalysis> => {
     console.log('[API Service] Requesting Gap Review from backend.');
-    return fetchFromApi<SavedAnalysis>('/generate/gap-review', {
+    return fetchFromApi<SavedAnalysis>('/analysis/generate/gap-review', {
         method: 'POST',
         body: JSON.stringify(payload)
     });
@@ -106,7 +106,7 @@ export const generateDeepDiveInBackend = async (payload: {
     allAustracContent: AustracUpdate[]
 }): Promise<SavedAnalysis> => {
     console.log('[API Service] Requesting Deep Dive from backend.');
-    return fetchFromApi<SavedAnalysis>('/generate/deep-dive', {
+    return fetchFromApi<SavedAnalysis>('/analysis/generate/deep-dive', {
         method: 'POST',
         body: JSON.stringify(payload)
     });
@@ -129,7 +129,7 @@ export const sendChatMessageToBackend = async (payload: {
   }
 }): Promise<{ text: string, grounding?: GroundingMetadata, retrievedContext?: DocumentChunk[] }> => {
     console.log('[API Service] Sending chat message to backend.');
-    return fetchFromApi<{ text: string, grounding?: GroundingMetadata, retrievedContext?: DocumentChunk[] }>('/chat', {
+    return fetchFromApi<{ text: string, grounding?: GroundingMetadata, retrievedContext?: DocumentChunk[] }>('/chat/chat', {
         method: 'POST',
         body: JSON.stringify(payload)
     });
@@ -146,7 +146,7 @@ export const generateDraftInBackend = async (payload: {
   originalDocument: CompanyDocument
 }): Promise<{ newDraft: string }> => {
     console.log('[API Service] Requesting draft text from backend.');
-    return fetchFromApi<{ newDraft: string }>('/generate/draft', {
+    return fetchFromApi<{ newDraft: string }>('/analysis/generate/draft', {
         method: 'POST',
         body: JSON.stringify(payload)
     });
