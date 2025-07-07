@@ -4,16 +4,22 @@ FROM node:18-alpine AS frontend-builder
 
 WORKDIR /app/frontend
 
-# Copy package files first (for better Docker layer caching)
+# Copy package files first
 COPY frontend/package*.json ./
 
-# Install ALL dependencies (use npm install to handle lock file mismatches)
+# Install dependencies FIRST - this creates node_modules with correct permissions
 RUN npm install
 
-# Copy all frontend files (node_modules excluded by .dockerignore)
-COPY frontend/ ./
+# Copy source files ONLY (exclude node_modules via explicit copy)
+COPY frontend/src ./src
+COPY frontend/index.html ./
+COPY frontend/vite.config.ts ./
+COPY frontend/tsconfig.json ./
+COPY frontend/tsconfig.node.json ./
+COPY frontend/tailwind.config.js ./
+COPY frontend/postcss.config.js ./
 
-# Build the React app for production
+# Build with the properly installed node_modules
 RUN npm run build
 
 # Stage 2: Python backend with static frontend serving
