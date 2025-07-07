@@ -1,0 +1,39 @@
+# cloudbuild.yaml - Cloud Build configuration
+steps:
+  # Build the container image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/ofx-compliance-assistant', '.']
+    
+  # Push the container image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/ofx-compliance-assistant']
+    
+  # Deploy container image to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+    - 'run'
+    - 'deploy'
+    - 'ofx-compliance-assistant'
+    - '--image'
+    - 'gcr.io/$PROJECT_ID/ofx-compliance-assistant'
+    - '--region'
+    - 'us-central1'
+    - '--platform'
+    - 'managed'
+    - '--allow-unauthenticated'
+    - '--port'
+    - '8080'
+    - '--memory'
+    - '2Gi'
+    - '--cpu'
+    - '2'
+    - '--timeout'
+    - '300'
+    - '--concurrency'
+    - '80'
+    - '--max-instances'
+    - '10'
+
+images:
+  - 'gcr.io/$PROJECT_ID/ofx-compliance-assistant'

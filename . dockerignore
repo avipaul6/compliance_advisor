@@ -1,0 +1,66 @@
+# .dockerignore
+
+# Node modules and build artifacts
+node_modules/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+
+# Python cache and virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+
+# Development files
+.git/
+.gitignore
+README.md
+.env.local
+.env.development
+.env.test
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Test files
+coverage/
+.nyc_output
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Documentation
+docs/
+*.md
+
+# Development scripts
+scripts/
+docker-compose.yml
+docker-compose.dev.yml
+
+# Local development
+.env.local
+.env.development
+
+# Frontend development
+frontend/src/**/*.test.*
+frontend/src/**/*.spec.*
