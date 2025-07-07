@@ -1,11 +1,12 @@
 # .dockerignore
 
-# Node modules and build artifacts
+# Node modules and build artifacts (CRITICAL - exclude these!)
 node_modules/
 frontend/node_modules/
+frontend/dist/
+frontend/build/
 frontend/.next/
 frontend/out/
-frontend/build/
 
 # Python cache and virtual environments
 __pycache__/
@@ -17,6 +18,7 @@ __pycache__/
 venv/
 ENV/
 env/
+backend/__pycache__/
 
 # Development files
 .git/
@@ -61,6 +63,11 @@ docker-compose.dev.yml
 .env.local
 .env.development
 
-# Frontend development
+# Frontend development and test files
 frontend/src/**/*.test.*
 frontend/src/**/*.spec.*
+frontend/.env*
+
+# Backend test files
+backend/tests/
+backend/**/*.test.py

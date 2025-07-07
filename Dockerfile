@@ -4,21 +4,23 @@ FROM node:18-alpine AS frontend-builder
 
 WORKDIR /app/frontend
 
-# Fix permissions and install dependencies
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S reactjs -u 1001
-
-# Copy package files with correct ownership
-COPY --chown=reactjs:nodejs frontend/package*.json ./
+# Copy package files first (for better Docker layer caching)
+COPY frontend/package*.json ./
 
 # Install ALL dependencies (including devDependencies for build)
 RUN npm ci
 
-# Copy frontend source with correct ownership
-COPY --chown=reactjs:nodejs frontend/ ./
+# Copy frontend source files (excluding node_modules via .dockerignore)
+COPY frontend/src ./src
+COPY frontend/public ./public
+COPY frontend/index.html ./
+COPY frontend/vite.config.ts ./
+COPY frontend/tsconfig.json ./
+COPY frontend/tsconfig.node.json ./
+COPY frontend/tailwind.config.js ./
+COPY frontend/postcss.config.js ./
 
-# Switch to non-root user and build
-USER reactjs
+# Build the React app for production
 RUN npm run build
 
 # Stage 2: Python backend with static frontend serving
