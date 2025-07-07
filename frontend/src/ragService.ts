@@ -3,7 +3,7 @@
 
 import { 
     AustracUpdate, CompanyDocument, DocumentChunk, SuggestedChange, SavedAnalysis, 
-    GroundingMetadata 
+    GroundingMetadata, ChatContext 
 } from './types';
 
 // Your Python backend's base URL.
@@ -121,18 +121,22 @@ export const generateDeepDiveInBackend = async (payload: {
 export const sendChatMessageToBackend = async (payload: {
   message: string,
   history: { sender: 'user' | 'model', text: string }[],
-  context: {
-    allCompanyDocs: CompanyDocument[],
-    allAustracContent: AustracUpdate[],
-    savedAnalyses: SavedAnalysis[],
-    activeAnalysisId: string | null
-  }
-}): Promise<{ text: string, grounding?: GroundingMetadata, retrievedContext?: DocumentChunk[] }> => {
+  context: ChatContext
+}) => {
     console.log('[API Service] Sending chat message to backend.');
-    return fetchFromApi<{ text: string, grounding?: GroundingMetadata, retrievedContext?: DocumentChunk[] }>('/chat/chat', {
-        method: 'POST',
-        body: JSON.stringify(payload)
-    });
+    console.log('[API Service] Payload:', payload); // ADD THIS
+    
+    try {
+        const response = await fetchFromApi<{ text: string, grounding?: GroundingMetadata, retrievedContext?: DocumentChunk[] }>('/chat', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        });
+        console.log('[API Service] Response received:', response); // ADD THIS
+        return response;
+    } catch (error) {
+        console.error('[API Service] Error:', error); // ADD THIS
+        throw error;
+    }
 };
 
 

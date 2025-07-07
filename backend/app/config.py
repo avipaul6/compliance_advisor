@@ -10,7 +10,14 @@ class Settings(BaseSettings):
     
     # Vertex AI Configuration
     VERTEX_AI_LOCATION: str = "us-central1"
-    GEMINI_MODEL: str = "gemini-2.5-flash-preview-04-17"
+    GEMINI_MODEL: str = "gemini-2.5-flash"
+
+    # Environment Detection
+    IS_CLOUD_ENVIRONMENT: bool = bool(
+        os.getenv("GOOGLE_CLOUD_PROJECT") or 
+        os.getenv("CLOUD_RUN_SERVICE") or 
+        os.getenv("K_SERVICE")  # Cloud Run service name
+    )
     
     # API Configuration
     API_V1_STR: str = "/api/v1"

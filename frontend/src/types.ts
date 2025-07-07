@@ -37,6 +37,12 @@ export interface CompanyDocument {
   isProcessedForRag?: boolean;
 }
 
+export interface ChatContext {
+  allCompanyDocs: CompanyDocument[];
+  allAustracContent: AustracUpdate[];
+  savedAnalyses: SavedAnalysis[];
+  activeAnalysisId: string | null;
+}
 
 export interface SuggestedChange {
   id: string; // Unique ID for this specific suggestion
