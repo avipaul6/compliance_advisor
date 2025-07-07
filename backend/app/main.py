@@ -39,6 +39,30 @@ if os.path.exists(static_dir):
         else:
             return {"message": "Frontend not built. Please build the React app first."}
     
+    @app.get("/debug/files")
+    async def debug_files():
+        """Debug endpoint to check what files exist"""
+        try:
+            files_info = {
+                "working_directory": os.getcwd(),
+                "app_directory_contents": os.listdir("/app"),
+                "static_exists": os.path.exists("/app/static"),
+                "static_contents": os.listdir("/app/static") if os.path.exists("/app/static") else "Directory not found",
+                "index_html_exists": os.path.exists("/app/static/index.html"),
+            }
+
+            # If static directory exists, check its contents
+            if os.path.exists("/app/static"):
+                static_files = []
+                for root, dirs, files in os.walk("/app/static"):
+                    for file in files:
+                        static_files.append(os.path.join(root, file))
+                files_info["all_static_files"] = static_files[:20]  # First 20 files
+
+            return files_info
+        except Exception as e:
+            return {"error": str(e)}
+    
     @app.get("/{path:path}")
     async def serve_react_routes(path: str):
         """Catch-all route to serve React app for client-side routing"""
