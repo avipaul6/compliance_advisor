@@ -8,7 +8,7 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', 'gcr.io/$PROJECT_ID/ofx-compliance-assistant']
     
-  # Deploy container image to Cloud Run
+  # Deploy container image to Cloud Run in Australia
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
@@ -18,7 +18,7 @@ steps:
     - '--image'
     - 'gcr.io/$PROJECT_ID/ofx-compliance-assistant'
     - '--region'
-    - 'us-central1'
+    - 'australia-southeast1'  # ✅ Deploy in Australia
     - '--platform'
     - 'managed'
     - '--allow-unauthenticated'

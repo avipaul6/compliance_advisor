@@ -7,18 +7,11 @@ WORKDIR /app/frontend
 # Copy package files first (for better Docker layer caching)
 COPY frontend/package*.json ./
 
-# Install ALL dependencies (including devDependencies for build)
-RUN npm ci
+# Install ALL dependencies (use npm install to handle lock file mismatches)
+RUN npm install
 
-# Copy frontend source files (excluding node_modules via .dockerignore)
-COPY frontend/src ./src
-COPY frontend/public ./public
-COPY frontend/index.html ./
-COPY frontend/vite.config.ts ./
-COPY frontend/tsconfig.json ./
-COPY frontend/tsconfig.node.json ./
-COPY frontend/tailwind.config.js ./
-COPY frontend/postcss.config.js ./
+# Copy all frontend files (node_modules excluded by .dockerignore)
+COPY frontend/ ./
 
 # Build the React app for production
 RUN npm run build

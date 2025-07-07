@@ -6,13 +6,17 @@ set -e
 # Configuration
 PROJECT_ID="your-gcp-project-id"  # Replace with your actual project ID
 SERVICE_NAME="ofx-compliance-assistant"
-REGION="us-central1"  # Change to your preferred region
+REGION="australia-southeast1"  # ✅ Deploy in Australia
 DATA_STORE_ID="your-data-store-id"  # Replace with your actual data store ID
+
+# Vertex AI Configuration (can be different from Cloud Run region)
+VERTEX_AI_LOCATION="us-central1"  # ✅ Your Vertex AI/data store location
 
 echo "🚀 Deploying OFX Compliance Assistant to Cloud Run"
 echo "Project: $PROJECT_ID"
-echo "Service: $SERVICE_NAME"
-echo "Region: $REGION"
+echo "Service: $SERVICE_NAME" 
+echo "Cloud Run Region: $REGION"
+echo "Vertex AI Region: $VERTEX_AI_LOCATION"
 
 # Check if required tools are installed
 command -v gcloud >/dev/null 2>&1 || { echo "gcloud CLI is required but not installed. Aborting." >&2; exit 1; }
@@ -42,8 +46,8 @@ gcloud run deploy $SERVICE_NAME \
     --timeout 300 \
     --concurrency 80 \
     --max-instances 10 \
-    --set-env-vars="PROJECT_ID=$PROJECT_ID,DATA_STORE_ID=$DATA_STORE_ID,LOCATION=global,VERTEX_AI_LOCATION=$REGION,ENVIRONMENT=production" \
-    --service-account="your-service-account@$PROJECT_ID.iam.gserviceaccount.com"
+    --set-env-vars="PROJECT_ID=$PROJECT_ID,DATA_STORE_ID=$DATA_STORE_ID,LOCATION=global,VERTEX_AI_LOCATION=$VERTEX_AI_LOCATION,ENVIRONMENT=production" \
+    --service-account="compliance-assistant-sa@$PROJECT_ID.iam.gserviceaccount.com"
 
 # Get the service URL
 SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region $REGION --format 'value(status.url)')
@@ -51,6 +55,8 @@ SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region $REGION --form
 echo "✅ Deployment completed successfully!"
 echo "🌐 Service URL: $SERVICE_URL"
 echo "📊 You can now access your application at: $SERVICE_URL"
+echo "🇦🇺 Deployed in Australia region for optimal user experience"
+echo "🤖 Using Vertex AI in $VERTEX_AI_LOCATION region"
 
 # Optional: Open the service in browser (uncomment if needed)
 # echo "🔗 Opening service in browser..."
