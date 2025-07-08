@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { CompanyDocument } from '../types'; 
 import { ICONS } from '../constants';
 import LoadingSpinner from './LoadingSpinner';
-import { parseFileContent, generateUniqueId, ParsedFileData } from '../utils';
+import { uploadService } from '../services/uploadService'; // Added import for uploadService
 import ComplianceDocumentCard from './ComplianceDocumentCard';
 
 interface CompanyDocumentsPageProps {
@@ -32,55 +32,75 @@ const CompanyDocumentsPage: React.FC<CompanyDocumentsPageProps> = ({
   const [parseError, setParseError] = useState<string | null>(null);
   const [parsingFileName, setParsingFileName] = useState<string | null>(null);
 
+  // UPDATED: New handleFileChange using uploadService instead of local parsing
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (!files || files.length === 0) return;
 
     setIsParsing(true);
     setParseError(null);
-    const newDocs: CompanyDocument[] = [];
-    let errorsEncountered: string[] = [];
-
-    for (const file of Array.from(files)) {
-      setParsingFileName(file.name);
-      try {
-        if (file.type !== 'application/pdf' && file.type !== 'text/plain') {
-          errorsEncountered.push(`Unsupported file type for ${file.name}: ${file.type}. Please upload PDF or TXT files.`);
-          continue;
-        }
-        const parsedData: ParsedFileData = await parseFileContent(file);
-        const newDoc: CompanyDocument = {
-          id: `${parsedData.name}-${parsedData.lastModified}-${parsedData.size}-${generateUniqueId().substring(0,5)}`, 
-          name: parsedData.name,
-          textContent: parsedData.textContent,
-          type: parsedData.type as 'pdf' | 'txt' | 'generic',
-          lastModified: parsedData.lastModified,
-          size: parsedData.size,
-          isProcessedForRag: false, // Initialize RAG status (not yet ingested to Vertex AI)
-        };
-        
-        // BUG FIX: Removed redundant check against `newDocs` array.
-        if (!companyDocs.some(doc => doc.id === newDoc.id)) {
-          newDocs.push(newDoc);
-        } else {
-          console.warn(`Skipping duplicate file (or file with potential ID collision): ${file.name}`);
-           errorsEncountered.push(`File ${file.name} might be a duplicate or caused an ID collision and was skipped. Try renaming if it's a different file.`);
-        }
-      } catch (err) {
-        errorsEncountered.push((err as Error).message);
-      }
-    }
     
-    if (newDocs.length > 0) {
-        setCompanyDocs(prevDocs => [...prevDocs, ...newDocs]);
-    }
-    if (errorsEncountered.length > 0) {
-        setParseError(errorsEncountered.join('\n'));
-    }
+    try {
+      console.log(`Starting upload of ${files.length} files to cloud storage...`);
+      
+      // Upload files using your existing uploadService
+      const results = await uploadService.uploadMultipleDocuments(
+        files,
+        'company', // document type
+        (fileName: string, progress: any) => {
+          setParsingFileName(fileName);
+          console.log(`Upload progress for ${fileName}:`, progress);
+        }
+      );
 
-    setIsParsing(false);
-    setParsingFileName(null);
-    event.target.value = ''; 
+      // Process results
+      const successfulUploads = results.filter(result => result.success);
+      const failedUploads = results.filter(result => !result.success);
+
+      if (failedUploads.length > 0) {
+        const errorMessages = failedUploads.map(result => result.message).join('\n');
+        setParseError(`Some uploads failed:\n${errorMessages}`);
+      }
+
+      if (successfulUploads.length > 0) {
+        // Convert successful uploads to CompanyDocument format for your UI
+        const newDocuments = successfulUploads.map((result, index) => ({
+          id: result.document_id || `upload-${Date.now()}-${index}`,
+          name: result.metadata?.original_filename || `Document ${index + 1}`,
+          textContent: '', // Content will be processed by Vertex AI in the cloud
+          type: 'generic' as const, // You can enhance this based on file extension
+          lastModified: Date.now(),
+          size: parseInt(result.metadata?.file_size || '0'),
+          isProcessedForRag: false, // Will be processed by cloud function
+          // Add cloud storage metadata
+          metadata: {
+            file_path: result.file_path,
+            storage_url: result.storage_url,
+            document_id: result.document_id,
+            ...result.metadata
+          }
+        }));
+
+        // Add to existing documents
+        setCompanyDocs(prev => [...prev, ...newDocuments]);
+        
+        console.log(`✅ Successfully uploaded ${successfulUploads.length} documents to cloud storage`);
+        
+        // Show success message
+        if (failedUploads.length === 0) {
+          setParseError(null); // Clear any previous errors
+        }
+      }
+
+    } catch (error) {
+      console.error('Upload error:', error);
+      setParseError(`Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setIsParsing(false);
+      setParsingFileName(null);
+      // Clear the input
+      event.target.value = '';
+    }
   };
 
   const handleRemoveDocument = (docId: string) => {
@@ -121,7 +141,7 @@ const CompanyDocumentsPage: React.FC<CompanyDocumentsPageProps> = ({
         {isParsing && parsingFileName && (
           <div className="mt-4 flex items-center text-orange-600">
             <LoadingSpinner size="sm" color="text-orange-500" />
-            <span className="ml-2">Parsing {parsingFileName}...</span>
+            <span className="ml-2">Uploading {parsingFileName}...</span>
           </div>
         )}
         {parseError && (

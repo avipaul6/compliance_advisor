@@ -6,36 +6,40 @@ export interface UserFeedback {
 }
 
 export interface AustracUpdate {
-  id: string; // unique identifier
-  title: string; // filename or user-input title for pasted text
+  id: string;
+  title: string;
   rawContent: string;
-  type: 'pdf' | 'txt' | 'pasted'; // Source type
-  dateAdded: string; // ISO string of when it was added/uploaded
-  summary?: string; // AI-generated summary
-
-  // Optional fields from original mock, user might not provide these for uploaded/pasted content
-  date?: string; 
-  sourceUrl?: string;
-
-  // RAG processing status - true if ingested into Vertex AI RAG (simulated)
+  type: 'pdf' | 'txt' | 'pasted';
+  dateAdded: string;
   isProcessedForRag?: boolean;
-  // Consider adding a flag for "isPrimaryLegislation" in a future enhancement
+  // Add cloud storage metadata support
+  metadata?: CloudStorageMetadata;
 }
 
-export interface CompanyDocument { 
+export interface CloudStorageMetadata {
+  file_path?: string;
+  storage_url?: string;
+  document_id?: string;
+  original_filename?: string;
+  content_type?: string;
+  document_type?: string;
+  upload_timestamp?: string;
+  file_size?: string;
+  unique_id?: string;
+}
+
+export interface CompanyDocument {
   id: string;
   name: string;
-  // type: 'Policy' | 'Program' | 'Procedure'; // Original, more specific type
-  type: 'pdf' | 'txt' | 'generic' | 'Policy' | 'Program' | 'Procedure'; // Broader type for uploaded files
-  // excerpt: string; // Original, from mock
-  // lastReviewed: string; // Original, from mock
-  textContent: string; // Added for uploaded file content
-  lastModified: number; // Added for uploaded file info
-  size: number; // Added for uploaded file info
-
-  // RAG processing status - true if ingested into Vertex AI RAG (simulated)
+  textContent: string;
+  type: 'pdf' | 'txt' | 'generic';
+  lastModified: number;
+  size: number;
   isProcessedForRag?: boolean;
+  // Add cloud storage metadata support
+  metadata?: CloudStorageMetadata;
 }
+
 
 export interface ChatContext {
   allCompanyDocs: CompanyDocument[];
@@ -157,4 +161,21 @@ export interface DocumentChunk {
   text: string; // The actual text content of the chunk
   keywords: string[]; // Keywords associated with this chunk by Vertex AI (simulated)
   charCount: number; // Character count of the chunk
+}
+
+// Add upload-related types if they don't exist in your types
+export interface UploadProgress {
+  fileName: string;
+  progress: number;
+  status: 'uploading' | 'processing' | 'completed' | 'error';
+  error?: string;
+}
+
+export interface UploadResponse {
+  success: boolean;
+  document_id?: string;
+  file_path?: string;
+  storage_url?: string;
+  metadata?: any;
+  message: string;
 }

@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { AustracUpdate } from '../types';
 import { ICONS } from '../constants';
 import LoadingSpinner from './LoadingSpinner';
-import { parseFileContent, generateUniqueId, ParsedFileData } from '../utils';
+import { uploadService } from '../services/uploadService'; // Added import for uploadService
+import { generateUniqueId } from '../utils'; // Keep this for pasted content
 import AustracUpdateCard from './AustracUpdateCard';
 
 interface AustracInputsPageProps {
@@ -36,56 +37,77 @@ const AustracInputsPage: React.FC<AustracInputsPageProps> = ({
   const [pastedContent, setPastedContent] = useState<string>('');
   const [pastedError, setPastedError] = useState<string | null>(null);
 
+  // UPDATED: New handleFileChange using uploadService instead of local parsing
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (!files || files.length === 0) return;
 
     setIsParsing(true);
     setParseError(null);
-    const newUpdates: AustracUpdate[] = [];
-    let errorsEncountered: string[] = [];
-
-    for (const file of Array.from(files)) {
-      setParsingFileName(file.name);
-      try {
-        if (file.type !== 'application/pdf' && file.type !== 'text/plain') {
-          errorsEncountered.push(`Unsupported file type for ${file.name}: ${file.type}. Please upload PDF or TXT files.`);
-          continue;
-        }
-        const parsedData: ParsedFileData = await parseFileContent(file);
-        const newUpdate: AustracUpdate = {
-          id: `${parsedData.name}-${new Date(parsedData.lastModified).getTime()}-${parsedData.size}-${generateUniqueId().substring(0,5)}`, 
-          title: parsedData.name,
-          rawContent: parsedData.textContent,
-          type: parsedData.type as 'pdf' | 'txt',
-          dateAdded: new Date().toISOString(),
-          isProcessedForRag: false,
-        };
-        
-        // BUG FIX: Removed redundant check against `newUpdates` array.
-        if (!userAustracContent.some(upd => upd.id === newUpdate.id)) {
-          newUpdates.push(newUpdate);
-        } else {
-           console.warn(`Skipping duplicate AUSTRAC file (or file with potential ID collision): ${file.name}`);
-           errorsEncountered.push(`File ${file.name} might be a duplicate or caused an ID collision and was skipped. Try renaming if it's a different file.`);
-        }
-      } catch (err) {
-        errorsEncountered.push((err as Error).message);
-      }
-    }
     
-    if (newUpdates.length > 0) {
-        setUserAustracContent(prevUpdates => [...prevUpdates, ...newUpdates]);
-    }
-    if (errorsEncountered.length > 0) {
-        setParseError(errorsEncountered.join('\n'));
-    }
+    try {
+      console.log(`Starting upload of ${files.length} regulatory files to cloud storage...`);
+      
+      // Upload files using your existing uploadService with 'regulatory' type
+      const results = await uploadService.uploadMultipleDocuments(
+        files,
+        'regulatory', // document type for AUSTRAC/regulatory files
+        (fileName: string, progress: any) => {
+          setParsingFileName(fileName);
+          console.log(`Upload progress for ${fileName}:`, progress);
+        }
+      );
 
-    setIsParsing(false);
-    setParsingFileName(null);
-    event.target.value = ''; 
+      // Process results
+      const successfulUploads = results.filter(result => result.success);
+      const failedUploads = results.filter(result => !result.success);
+
+      if (failedUploads.length > 0) {
+        const errorMessages = failedUploads.map(result => result.message).join('\n');
+        setParseError(`Some uploads failed:\n${errorMessages}`);
+      }
+
+      if (successfulUploads.length > 0) {
+        // Convert successful uploads to AustracUpdate format for your UI
+        const newUpdates = successfulUploads.map((result, index) => ({
+          id: result.document_id || `regulatory-upload-${Date.now()}-${index}`,
+          title: result.metadata?.original_filename || `Regulatory Document ${index + 1}`,
+          rawContent: '', // Content will be processed by Vertex AI in the cloud
+          type: 'pdf' as const, // You can enhance this based on file extension
+          dateAdded: new Date().toISOString(),
+          isProcessedForRag: false, // Will be processed by cloud function
+          // Add cloud storage metadata
+          metadata: {
+            file_path: result.file_path,
+            storage_url: result.storage_url,
+            document_id: result.document_id,
+            ...result.metadata
+          }
+        }));
+
+        // Add to existing regulatory content
+        setUserAustracContent(prev => [...prev, ...newUpdates]);
+        
+        console.log(`✅ Successfully uploaded ${successfulUploads.length} regulatory documents to cloud storage`);
+        
+        // Show success message
+        if (failedUploads.length === 0) {
+          setParseError(null); // Clear any previous errors
+        }
+      }
+
+    } catch (error) {
+      console.error('Upload error:', error);
+      setParseError(`Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setIsParsing(false);
+      setParsingFileName(null);
+      // Clear the input
+      event.target.value = '';
+    }
   };
 
+  // Keep existing pasted text functionality unchanged
   const handleAddPastedText = () => {
     setPastedError(null);
     if (!pastedTitle.trim()) { setPastedError("Title for pasted text cannot be empty."); return; }
@@ -100,7 +122,6 @@ const AustracInputsPage: React.FC<AustracInputsPageProps> = ({
       isProcessedForRag: false,
     };
     
-    // BUG FIX: Removed check for duplicate titles, allowing multiple entries with the same title.
     setUserAustracContent(prevUpdates => [...prevUpdates, newUpdate]);
     setPastedTitle('');
     setPastedContent('');
@@ -145,7 +166,7 @@ const AustracInputsPage: React.FC<AustracInputsPageProps> = ({
         {isParsing && parsingFileName && (
           <div className="mt-4 flex items-center text-orange-600">
             <LoadingSpinner size="sm" color="text-orange-500"/>
-            <span className="ml-2">Parsing {parsingFileName}...</span>
+            <span className="ml-2">Uploading {parsingFileName}...</span>
           </div>
         )}
         {parseError && (
@@ -161,80 +182,79 @@ const AustracInputsPage: React.FC<AustracInputsPageProps> = ({
         <h3 className="text-xl font-semibold text-stone-700 mb-3">Paste Regulatory Text</h3>
         <div className="space-y-4">
           <div>
-            <label htmlFor="pastedTitle" className="block text-sm font-medium text-stone-600 mb-1">Title for Pasted Content</label>
+            <label htmlFor="pasted-title" className="block text-sm font-medium text-stone-700 mb-1">Title/Description</label>
             <input
+              id="pasted-title"
               type="text"
-              id="pastedTitle"
               value={pastedTitle}
               onChange={(e) => setPastedTitle(e.target.value)}
-              className="w-full p-2.5 bg-white border border-orange-300 rounded-md shadow-sm focus:ring-1 focus:ring-orange-500 focus:border-orange-500 text-stone-800 placeholder-stone-400"
-              placeholder="e.g., Regulatory Guidance Note July 2024"
+              placeholder="e.g., AUSTRAC Update 2024-01"
+              className="w-full px-3 py-2 border border-orange-300 rounded-md shadow-sm focus:outline-none focus:ring-orange-500 focus:border-orange-500"
               disabled={isParsing}
-              aria-required="true"
             />
           </div>
           <div>
-            <label htmlFor="pastedContent" className="block text-sm font-medium text-stone-600 mb-1">Pasted Regulatory Content</label>
+            <label htmlFor="pasted-content" className="block text-sm font-medium text-stone-700 mb-1">Content</label>
             <textarea
-              id="pastedContent"
-              rows={8}
+              id="pasted-content"
               value={pastedContent}
               onChange={(e) => setPastedContent(e.target.value)}
-              className="w-full p-2.5 bg-white border border-orange-300 rounded-md shadow-sm focus:ring-1 focus:ring-orange-500 focus:border-orange-500 text-stone-800 placeholder-stone-400 resize-y"
-              placeholder="Paste the full text of the regulatory update or guidance here..."
+              placeholder="Paste regulatory text, guidelines, or updates here..."
+              rows={6}
+              className="w-full px-3 py-2 border border-orange-300 rounded-md shadow-sm focus:outline-none focus:ring-orange-500 focus:border-orange-500"
               disabled={isParsing}
-              aria-required="true"
             />
           </div>
           <button
             onClick={handleAddPastedText}
             disabled={isParsing || !pastedTitle.trim() || !pastedContent.trim()}
-            className="px-4 py-2 bg-green-500 hover:bg-green-600 disabled:bg-stone-300 disabled:text-stone-500 text-white font-medium rounded-md shadow-sm transition-colors"
+            className="inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-orange-500 hover:bg-orange-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500 disabled:bg-stone-300 disabled:cursor-not-allowed transition-colors"
           >
-            Add Pasted Text
+            {ICONS.plus("w-4 h-4 mr-2")}
+            Add Pasted Content
           </button>
-          {pastedError && (
-            <div className="mt-2 bg-red-50 border border-red-300 text-red-700 px-3 py-2 rounded-md text-sm" role="alert">
-              {pastedError}
-            </div>
-          )}
         </div>
+        {pastedError && (
+          <div className="mt-4 bg-red-50 border border-red-300 text-red-700 px-4 py-3 rounded-lg" role="alert">
+            <strong className="font-semibold">Error:</strong> {pastedError}
+          </div>
+        )}
       </div>
 
-      {/* Ingestion Section */}
-       <div className="mb-8 p-6 bg-green-50 rounded-lg border border-green-200">
-          <h3 className="text-xl font-semibold text-stone-700 mb-2 flex items-center">
-            {ICONS.cpuChip("w-6 h-6 mr-2 text-green-600")}
-            Vertex AI RAG Ingestion
-          </h3>
-          <p className="text-sm text-stone-600 mb-4">
-            Process all uploaded documents (Company and Regulatory) to make them searchable by the AI for analysis and chat. This is a simulation of adding them to a Vector Database.
-             <span className="font-semibold block mt-1">{ingestedDocsCount} of {totalDocs} total documents are currently ingested.</span>
-          </p>
-          
-          {isIngestionProcessing ? (
-            <div className="flex items-center text-orange-600 p-2">
-              <LoadingSpinner size="sm" color="text-orange-500"/>
-              <span className="ml-2 font-medium">{ingestionStatus || "Processing documents..."}</span>
-            </div>
-          ) : (
-            <button
-              onClick={() => onIngestAll(allDocsIngested)}
-              disabled={!isAiReady || isIngestionProcessing || totalDocs === 0}
-              className={`inline-flex items-center justify-center px-6 py-3 border border-transparent text-base font-medium rounded-md shadow-sm text-white focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-green-50 transition-colors
-                ${allDocsIngested ? 'bg-green-600 hover:bg-green-700 focus:ring-green-600' : 'bg-amber-500 hover:bg-amber-600 focus:ring-amber-500'}
-                ${!isAiReady || isIngestionProcessing || totalDocs === 0 ? 'bg-stone-300 cursor-not-allowed' : ''}`}
-            >
-              {ICONS.cloudArrowUp("w-5 h-5 mr-2")}
-              {allDocsIngested && totalDocs > 0 ? `Re-process all ${totalDocs} documents` : (uningestedCount > 0 ? `Ingest ${uningestedCount} un-processed document(s)` : 'All documents ingested')}
-            </button>
-          )}
+      {/* Ingestion Section - Show same as company docs */}
+      <div className="mb-8 p-6 bg-green-50 rounded-lg border border-green-200">
+        <h3 className="text-xl font-semibold text-stone-700 mb-2 flex items-center">
+          {ICONS.cpuChip("w-6 h-6 mr-2 text-green-600")}
+          Vertex AI RAG Ingestion
+        </h3>
+        <p className="text-sm text-stone-600 mb-4">
+          Process all uploaded documents (Company and Regulatory) to make them searchable by the AI for analysis and chat. This is a simulation of adding them to a Vector Database.
+           <span className="font-semibold block mt-1">{ingestedDocsCount} of {totalDocs} total documents are currently ingested.</span>
+        </p>
+        
+        {isIngestionProcessing ? (
+          <div className="flex items-center text-orange-600 p-2">
+            <LoadingSpinner size="sm" color="text-orange-500"/>
+            <span className="ml-2 font-medium">{ingestionStatus || "Processing documents..."}</span>
+          </div>
+        ) : (
+          <button
+            onClick={() => onIngestAll(allDocsIngested)}
+            disabled={!isAiReady || isIngestionProcessing || totalDocs === 0}
+            className={`inline-flex items-center justify-center px-6 py-3 border border-transparent text-base font-medium rounded-md shadow-sm text-white focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-green-50 transition-colors
+              ${allDocsIngested ? 'bg-green-600 hover:bg-green-700 focus:ring-green-600' : 'bg-amber-500 hover:bg-amber-600 focus:ring-amber-500'}
+              ${!isAiReady || isIngestionProcessing || totalDocs === 0 ? 'bg-stone-300 cursor-not-allowed' : ''}`}
+          >
+            {ICONS.cloudArrowUp("w-5 h-5 mr-2")}
+            {allDocsIngested && totalDocs > 0 ? `Re-process all ${totalDocs} documents` : (uningestedCount > 0 ? `Ingest ${uningestedCount} un-processed document(s)` : 'All documents ingested')}
+          </button>
+        )}
 
-          {ingestionStatus && !isIngestionProcessing && (
-            <p className="text-xs text-green-700 mt-3 bg-green-100 p-2 rounded-md">{ingestionStatus}</p>
-          )}
-           {!isAiReady && <p className="text-xs text-red-600 mt-2">AI is not ready. Check API Key configuration.</p>}
-        </div>
+        {ingestionStatus && !isIngestionProcessing && (
+          <p className="text-xs text-green-700 mt-3 bg-green-100 p-2 rounded-md">{ingestionStatus}</p>
+        )}
+         {!isAiReady && <p className="text-xs text-red-600 mt-2">AI is not ready. Check API Key configuration.</p>}
+      </div>
 
       {/* List of AUSTRAC Content */}
       <div>
