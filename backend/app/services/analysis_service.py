@@ -19,17 +19,116 @@ class AnalysisService:
         self.vertex_ai_service = vertex_ai_service
     
     def generate_gap_review(self, request: GapReviewRequest) -> SavedAnalysis:
-        """Generate a gap review analysis (currently mock, TODO: implement real version)"""
+        """Generate a gap review analysis using Vertex AI"""
         try:
             target_docs = [doc for doc in request.allCompanyDocs if doc.id in request.companyDocIds]
             if not target_docs:
                 raise ValueError("Missing company documents.")
-                
-            mock_change_id = str(uuid.uuid4())
-            doc_name = target_docs[0].name
             
-            mock_result = ChallengeAnalysisResult(
-                suggested_changes=[
+            # Check if Vertex AI is available
+            if not self.vertex_ai_service or not hasattr(self.vertex_ai_service, 'analyze_gap_review'):
+                logger.warning("Vertex AI service not available, falling back to mock")
+                return self._generate_mock_gap_review(target_docs, request)
+            
+            logger.info(f"Starting real gap review analysis for {len(target_docs)} documents")
+            
+            # Perform real AI analysis for gap review
+            analysis_result = self.vertex_ai_service.analyze_gap_review(
+                company_docs=target_docs,
+                regulatory_content=request.allAustracContent,
+                target_regulatory_ids=request.targetRegulatoryIds
+            )
+            
+            # Convert AI response to structured format
+            suggested_changes = []
+            for change_data in analysis_result.get("suggested_changes", []):
+                suggested_changes.append(SuggestedChange(
+                    id=change_data["id"],
+                    document_section=change_data["document_section"],
+                    current_status_summary=change_data["current_status_summary"],
+                    austrac_relevance=change_data["austrac_relevance"],
+                    suggested_modification=change_data["suggested_modification"],
+                    priority=change_data["priority"],
+                    source_document_name=change_data.get("source_document_name", ""),
+                    basis_of_suggestion=change_data.get("basis_of_suggestion", "Regulatory Analysis")
+                ))
+
+            action_plan = []
+            for action_data in analysis_result.get("action_plan", []):
+                action_plan.append(ActionPlanItem(
+                    id=action_data["id"],
+                    task=action_data["task"],
+                    responsible=action_data["responsible"],
+                    timeline=action_data["timeline"],
+                    priority_level=action_data["priority_level"]
+                ))
+            
+            # Group suggestions by document
+            grouped_suggestions = {}
+            for change in suggested_changes:
+                doc_name = change.source_document_name
+                if doc_name not in grouped_suggestions:
+                    grouped_suggestions[doc_name] = []
+                grouped_suggestions[doc_name].append(change)
+            
+            # Create result
+            challenge_result = ChallengeAnalysisResult(
+                suggested_changes=suggested_changes,
+                action_plan=action_plan,
+                groupedSuggestions=grouped_suggestions
+            )
+            
+            analysis_id = str(uuid.uuid4())
+            timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            
+            return SavedAnalysis(
+                id=analysis_id,
+                name=f"Gap Review - {timestamp[:10]}",
+                timestamp=timestamp,
+                type='challenge',
+                challengeAnalysisResult=challenge_result,
+                groundingMetadata=analysis_result.get("grounding_metadata"),
+                userPrompt="Regulatory target gap review analysis",
+                systemPrompt="AI-powered compliance gap analysis using Vertex AI Search and Gemini"
+            )
+            
+        except Exception as e:
+            logger.error(f"Error generating gap review: {e}")
+            # Fallback to mock on error
+            target_docs = [doc for doc in request.allCompanyDocs if doc.id in request.companyDocIds]
+            if target_docs:
+                return self._generate_mock_gap_review(target_docs, request)
+            else:
+                raise Exception(f"Failed to generate gap review: {str(e)}")
+
+    def _generate_mock_gap_review(self, target_docs: List, request: GapReviewRequest) -> SavedAnalysis:
+        """Fallback mock gap review when Vertex AI is not available"""
+        mock_change_id = str(uuid.uuid4())
+        doc_name = target_docs[0].name
+        
+        mock_result = ChallengeAnalysisResult(
+            suggested_changes=[
+                SuggestedChange(
+                    id=f"grsc-{mock_change_id}",
+                    document_section="Section 3.1: Customer Identification",
+                    current_status_summary="The current policy requires two forms of ID for verification.",
+                    austrac_relevance="The new AUSTRAC guidance emphasizes the need for digital identity verification methods.",
+                    suggested_modification="Incorporate a new sub-section for verifying customers using the Australian Government's Digital Identity Framework.",
+                    priority="High",
+                    source_document_name=doc_name
+                )
+            ],
+            action_plan=[
+                ActionPlanItem(
+                    id=f"grap-{uuid.uuid4()}",
+                    task="Develop a new procedure for digital identity verification.",
+                    responsible="Compliance Team Lead",
+                    timeline="3 Months",
+                    priority_level="High"
+                )
+            ],
+            groupedSuggestions={
+                doc_name: [
                     SuggestedChange(
                         id=f"grsc-{mock_change_id}",
                         document_section="Section 3.1: Customer Identification",
@@ -39,47 +138,22 @@ class AnalysisService:
                         priority="High",
                         source_document_name=doc_name
                     )
-                ],
-                action_plan=[
-                    ActionPlanItem(
-                        id=f"grap-{uuid.uuid4()}",
-                        task="Develop a new procedure for digital identity verification.",
-                        responsible="Compliance Team Lead",
-                        timeline="3 Months",
-                        priority_level="High"
-                    )
-                ],
-                groupedSuggestions={
-                    doc_name: [
-                        SuggestedChange(
-                            id=f"grsc-{mock_change_id}",
-                            document_section="Section 3.1: Customer Identification",
-                            current_status_summary="The current policy requires two forms of ID for verification.",
-                            austrac_relevance="The new AUSTRAC guidance emphasizes the need for digital identity verification methods.",
-                            suggested_modification="Incorporate a new sub-section for verifying customers using the Australian Government's Digital Identity Framework.",
-                            priority="High",
-                            source_document_name=doc_name
-                        )
-                    ]
-                }
-            )
-            
-            analysis_id = str(uuid.uuid4())
-            timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            
-            return SavedAnalysis(
-                id=analysis_id,
-                name=f"Gap Review - {timestamp}",
-                timestamp=timestamp,
-                type='challenge',
-                challengeAnalysisResult=mock_result,
-                userPrompt="[Gap Review analysis generated]",
-                systemPrompt="[System prompt for gap review]"
-            )
-            
-        except Exception as e:
-            logger.error(f"Error generating gap review: {e}")
-            raise Exception(f"Failed to generate gap review: {str(e)}")
+                ]
+            }
+        )
+        
+        analysis_id = str(uuid.uuid4())
+        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        
+        return SavedAnalysis(
+            id=analysis_id,
+            name=f"Gap Review - {timestamp} (Mock)",
+            timestamp=timestamp,
+            type='challenge',
+            challengeAnalysisResult=mock_result,
+            userPrompt="[Gap Review analysis generated - Mock Mode]",
+            systemPrompt="[System prompt for gap review - Mock Mode]"
+        )
 
     def generate_deep_dive(self, request: DeepDiveRequest) -> SavedAnalysis:
         """Generate a real deep dive analysis using Vertex AI"""
@@ -175,38 +249,48 @@ class AnalysisService:
         suggestions = []
         actions = []
         
-        # Analyze content and generate relevant suggestions
+        # Content-based analysis for suggestions
         if "customer" in doc_content_lower and "identification" in doc_content_lower:
             suggestions.append(SuggestedChange(
                 id=f"ddsc-{str(uuid.uuid4())[:8]}",
-                document_section="Customer Identification Requirements",
-                current_status_summary="Current policy requires basic identification documents",
-                austrac_relevance="AUSTRAC requires enhanced customer due diligence for certain customer types",
-                suggested_modification="Add requirements for enhanced due diligence procedures for high-risk customers, including PEP screening",
+                document_section="Customer Identification Procedures",
+                current_status_summary="Current procedures require manual verification",
+                austrac_relevance="AUSTRAC requires enhanced due diligence and digital verification capabilities",
+                suggested_modification="Implement digital identity verification using government frameworks and biometric validation",
                 priority="High",
-                basis_of_suggestion="Legislation"
+                basis_of_suggestion="Regulation"
             ))
-            
             actions.append(ActionPlanItem(
                 id=f"ddap-{str(uuid.uuid4())[:8]}",
-                task="Update customer identification procedures to include PEP screening",
-                responsible="Compliance Team",
-                timeline="Next Quarter",
+                task="Upgrade customer identification systems to support digital verification",
+                responsible="IT and Compliance Teams",
+                timeline="6 Months",
                 priority_level="High"
             ))
-        
+
         if "risk" in doc_content_lower:
             suggestions.append(SuggestedChange(
                 id=f"ddsc-{str(uuid.uuid4())[:8]}",
                 document_section="Risk Assessment Framework",
-                current_status_summary="Document mentions risk assessment but lacks specific criteria",
-                austrac_relevance="Risk-based approach is fundamental to AML/CTF compliance",
-                suggested_modification="Define specific risk factors and scoring methodology for customer risk assessment",
+                current_status_summary="Risk assessment methodology outlined",
+                austrac_relevance="Enhanced risk-based approach required for transaction monitoring",
+                suggested_modification="Implement dynamic risk scoring with machine learning capabilities for real-time assessment",
                 priority="Medium",
-                basis_of_suggestion="General Knowledge"
+                basis_of_suggestion="Industry Best Practice"
             ))
 
-        if "record" in doc_content_lower or "documentation" in doc_content_lower:
+        if "transaction" in doc_content_lower or "monitor" in doc_content_lower:
+            suggestions.append(SuggestedChange(
+                id=f"ddsc-{str(uuid.uuid4())[:8]}",
+                document_section="Transaction Monitoring",
+                current_status_summary="Basic transaction monitoring described",
+                austrac_relevance="AUSTRAC requires sophisticated transaction monitoring for suspicious activity detection",
+                suggested_modification="Enhance monitoring algorithms to include behavioral analysis and pattern recognition",
+                priority="High",
+                basis_of_suggestion="Legislation"
+            ))
+
+        if "record" in doc_content_lower:
             suggestions.append(SuggestedChange(
                 id=f"ddsc-{str(uuid.uuid4())[:8]}",
                 document_section="Record Keeping Requirements",

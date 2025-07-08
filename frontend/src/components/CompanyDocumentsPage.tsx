@@ -32,76 +32,78 @@ const CompanyDocumentsPage: React.FC<CompanyDocumentsPageProps> = ({
   const [parseError, setParseError] = useState<string | null>(null);
   const [parsingFileName, setParsingFileName] = useState<string | null>(null);
 
-  // UPDATED: New handleFileChange using uploadService instead of local parsing
-  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = event.target.files;
-    if (!files || files.length === 0) return;
 
-    setIsParsing(true);
-    setParseError(null);
+const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const files = event.target.files;
+  if (!files || files.length === 0) return;
+
+  setIsParsing(true);
+  setParseError(null);
+  
+  try {
+    console.log(`Starting upload of ${files.length} files to cloud storage...`);
     
-    try {
-      console.log(`Starting upload of ${files.length} files to cloud storage...`);
-      
-      // Upload files using your existing uploadService
-      const results = await uploadService.uploadMultipleDocuments(
-        files,
-        'company', // document type
-        (fileName: string, progress: any) => {
-          setParsingFileName(fileName);
-          console.log(`Upload progress for ${fileName}:`, progress);
-        }
-      );
+    // Convert FileList to Array
+    const fileArray = Array.from(files);
+    
+    // Use your uploadService.uploadMultipleDocuments method
+    const batchResult = await uploadService.uploadMultipleDocuments(fileArray, 'company');
+    
+    // Extract results from the BatchUploadResult structure
+    const results = batchResult.uploads.map(upload => upload.result);
+    const successfulUploads = results.filter(result => result.success);
+    const failedUploads = results.filter(result => !result.success);
 
-      // Process results
-      const successfulUploads = results.filter(result => result.success);
-      const failedUploads = results.filter(result => !result.success);
-
-      if (failedUploads.length > 0) {
-        const errorMessages = failedUploads.map(result => result.message).join('\n');
-        setParseError(`Some uploads failed:\n${errorMessages}`);
-      }
-
-      if (successfulUploads.length > 0) {
-        // Convert successful uploads to CompanyDocument format for your UI
-        const newDocuments = successfulUploads.map((result, index) => ({
-          id: result.document_id || `upload-${Date.now()}-${index}`,
-          name: result.metadata?.original_filename || `Document ${index + 1}`,
-          textContent: '', // Content will be processed by Vertex AI in the cloud
-          type: 'generic' as const, // You can enhance this based on file extension
-          lastModified: Date.now(),
-          size: parseInt(result.metadata?.file_size || '0'),
-          isProcessedForRag: false, // Will be processed by cloud function
-          // Add cloud storage metadata
-          metadata: {
-            file_path: result.file_path,
-            storage_url: result.storage_url,
-            document_id: result.document_id,
-            ...result.metadata
-          }
-        }));
-
-        // Add to existing documents
-        setCompanyDocs(prev => [...prev, ...newDocuments]);
-        
-        console.log(`✅ Successfully uploaded ${successfulUploads.length} documents to cloud storage`);
-        
-        // Show success message
-        if (failedUploads.length === 0) {
-          setParseError(null); // Clear any previous errors
-        }
-      }
-
-    } catch (error) {
-      console.error('Upload error:', error);
-      setParseError(`Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    } finally {
-      setIsParsing(false);
-      setParsingFileName(null);
-      // Clear the input
-      event.target.value = '';
+    // Handle failed uploads
+    if (failedUploads.length > 0) {
+      const errorMessages = failedUploads.map(result => result.message).join('\n');
+      setParseError(`Some uploads failed:\n${errorMessages}`);
     }
-  };
+
+    // Handle successful uploads
+    if (successfulUploads.length > 0) {
+      // Convert successful uploads to CompanyDocument format for your UI
+      const newDocuments = successfulUploads.map((result, index) => ({
+        id: result.document_id || `upload-${Date.now()}-${index}`,
+        name: result.metadata?.original_filename || `Document ${index + 1}`,
+        textContent: '', // Content will be processed by Vertex AI in the cloud
+        type: 'generic' as const, // You can enhance this based on file extension
+        lastModified: Date.now(),
+        size: parseInt(result.metadata?.file_size || '0'),
+        isProcessedForRag: false, // Will be processed by cloud function
+        // Add cloud storage metadata
+        metadata: {
+          file_path: result.file_path,
+          storage_url: result.storage_url,
+          document_id: result.document_id,
+          ...result.metadata
+        }
+      }));
+
+      // Add to existing documents
+      setCompanyDocs(prev => [...prev, ...newDocuments]);
+      
+      console.log(`✅ Successfully uploaded ${successfulUploads.length} documents to cloud storage`);
+      
+      // Show success message
+      if (failedUploads.length === 0) {
+        setParseError(null); // Clear any previous errors
+      }
+    }
+
+    // Log summary
+    console.log(`Upload summary: ${batchResult.summary.successful_uploads}/${batchResult.summary.total_files} successful`);
+
+  } catch (error) {
+    console.error('Upload error:', error);
+    setParseError(`Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  } finally {
+    setIsParsing(false);
+    setParsingFileName(null);
+    // Clear the input
+    event.target.value = '';
+  }
+};
 
   const handleRemoveDocument = (docId: string) => {
     setCompanyDocs(prevDocs => prevDocs.filter(doc => doc.id !== docId));
