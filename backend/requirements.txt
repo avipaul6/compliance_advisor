@@ -1,8 +1,11 @@
 fastapi
 uvicorn[standard]
-python-dotenv
-google-cloud-aiplatform
+gunicorn
 pydantic
 pydantic-settings
-gunicorn
+google-cloud-aiplatform
 google-cloud-discoveryengine
+google-cloud-storage
+python-multipart
+PyPDF2
+python-docx

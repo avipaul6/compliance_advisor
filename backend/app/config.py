@@ -13,6 +13,20 @@ class Settings(BaseSettings):
     VERTEX_AI_LOCATION: str = os.getenv("VERTEX_AI_LOCATION", "us-central1")
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
+    # Cloud Storage Configuration
+    STORAGE_BUCKET_NAME: str = os.getenv("STORAGE_BUCKET_NAME", "ofx-compliance-documents")
+    
+    # Document processing configuration
+    DOCUMENT_PROCESSING_FUNCTION_URL: str = os.getenv(
+        "DOCUMENT_PROCESSING_FUNCTION_URL", 
+        ""
+    )
+    
+    # File upload limits and validation
+    MAX_FILE_SIZE_MB: int = int(os.getenv("MAX_FILE_SIZE_MB", "10"))
+    ALLOWED_FILE_EXTENSIONS: List[str] = [".pdf", ".txt", ".docx", ".doc"]
+    MAX_BATCH_SIZE: int = int(os.getenv("MAX_BATCH_SIZE", "10"))
+
     # Environment Detection
     IS_CLOUD_ENVIRONMENT: bool = bool(
         os.getenv("GOOGLE_CLOUD_PROJECT") or 
@@ -36,8 +50,33 @@ class Settings(BaseSettings):
     PORT: int = int(os.getenv("PORT", 8080))
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "production")
     
+    # Request timeout settings
+    REQUEST_TIMEOUT_SECONDS: int = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "300"))
+    
+    # Logging configuration
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+    
     class Config:
         env_file = ".env"
         case_sensitive = True
 
 settings = Settings()
+
+# Validation function to ensure required settings are present
+def validate_settings():
+    """Validate that all required settings are present"""
+    required_settings = [
+        "PROJECT_ID",
+        "DATA_STORE_ID",
+        "STORAGE_BUCKET_NAME"
+    ]
+    
+    missing_settings = []
+    for setting in required_settings:
+        if not getattr(settings, setting) or getattr(settings, setting) == f"your-{setting.lower().replace('_', '-')}":
+            missing_settings.append(setting)
+    
+    if missing_settings:
+        raise ValueError(f"Missing required settings: {', '.join(missing_settings)}")
+    
+    return True

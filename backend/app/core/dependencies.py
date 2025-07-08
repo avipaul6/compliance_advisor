@@ -3,6 +3,7 @@
 from app.services.vertex_ai_service import VertexAIService
 from app.services.analysis_service import AnalysisService
 from app.services.document_service import DocumentService
+from app.services.storage_service import StorageService
 from functools import lru_cache
 
 @lru_cache()
@@ -14,6 +15,10 @@ def get_analysis_service() -> AnalysisService:
     # Inject VertexAI service into AnalysisService
     vertex_ai_service = get_vertex_ai_service()
     return AnalysisService(vertex_ai_service=vertex_ai_service)
+
+@lru_cache()
+def get_storage_service() -> StorageService:
+    return StorageService()
 
 @lru_cache()
 def get_document_service() -> DocumentService:
