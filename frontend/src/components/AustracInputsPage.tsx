@@ -5,14 +5,11 @@ import { ICONS } from '../constants';
 import LoadingSpinner from './LoadingSpinner';
 import { generateUniqueId } from '../utils';
 
-// Import uploadService with error boundary
-let uploadService: any;
-try {
-  uploadService = require('../services/uploadService').uploadService;
-} catch (error) {
-  console.warn('uploadService not available, using fallback');
-  uploadService = null;
-}
+// Import uploadService with error boundary - FIXED for production
+import { uploadService } from '../services/uploadService';
+
+// Remove the dynamic require attempt since it fails in production
+console.log('🔄 uploadService imported:', uploadService ? 'SUCCESS' : 'FAILED');
 
 // Import AustracUpdateCard with error boundary
 let AustracUpdateCard: any;
@@ -88,7 +85,7 @@ const AustracInputsPage: React.FC<AustracInputsPageProps> = ({
       
       // Check if uploadService is available
       if (!uploadService || !uploadService.uploadMultipleDocuments) {
-        throw new Error('Upload service not available. Please check backend connection.');
+        throw new Error('Upload service not available. Please refresh the page and try again.');
       }
 
       // Convert FileList to Array safely
@@ -286,7 +283,7 @@ const AustracInputsPage: React.FC<AustracInputsPageProps> = ({
           )}
           {!uploadService && (
             <div className="mt-4 bg-yellow-50 border border-yellow-300 text-yellow-700 px-4 py-3 rounded-lg" role="alert">
-              <strong className="font-semibold">Warning:</strong> Upload service not available. Please check backend connection.
+              <strong className="font-semibold">Info:</strong> Upload service initializing. If this persists, please refresh the page.
             </div>
           )}
         </div>
@@ -324,7 +321,8 @@ const AustracInputsPage: React.FC<AustracInputsPageProps> = ({
               disabled={isParsing || !pastedTitle.trim() || !pastedContent.trim()}
               className="inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-orange-500 hover:bg-orange-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500 disabled:bg-stone-300 disabled:cursor-not-allowed transition-colors"
             >
-              {ICONS.plus("w-4 h-4 mr-2")}
+              {/* Using existing arrowUpTray icon instead of missing plus icon */}
+              {ICONS.arrowUpTray("w-4 h-4 mr-2")}
               Add Pasted Content
             </button>
           </div>
