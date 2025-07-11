@@ -1,420 +1,438 @@
-# backend/app/services/analysis_service.py
-
-import uuid
-import datetime
-from app.models.requests import GapReviewRequest, DeepDiveRequest, DraftRequest
-from app.models.responses import (
-    SavedAnalysis, ChallengeAnalysisResult, DeepDiveAnalysisResult,
-    SuggestedChange, ActionPlanItem
-)
-from typing import Dict, Any, List
+# backend/app/services/analysis_service.py - Updated for Multi-Document RAG
+"""
+Analysis Service - Updated for Multi-Document RAG Capabilities
+Enhanced to leverage Vector Search and comprehensive document analysis
+"""
 import logging
+from typing import List, Dict, Any, Optional
+from datetime import datetime
+import asyncio
+
+from app.models.analysis_models import (
+    GapReviewRequest, GapReviewResult, DeepDiveRequest, DeepDiveAnalysisResult,
+    SuggestedChange, ActionPlanItem, CompanyDocument, AustracUpdate
+)
+from app.services.vertex_ai_service import VertexAIService
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 class AnalysisService:
+    """Enhanced analysis service with multi-document RAG capabilities"""
     
-    def __init__(self, vertex_ai_service=None):
-        # Vertex AI service will be injected via dependency injection
-        self.vertex_ai_service = vertex_ai_service
+    def __init__(self):
+        """Initialize analysis service with RAG-enabled Vertex AI service"""
+        self.vertex_ai_service = VertexAIService()
+        self.max_documents_per_analysis = 50  # Increased for RAG capabilities
+        self.max_concurrent_analyses = 5
+        
+        logger.info("Analysis Service initialized with RAG capabilities")
     
-    def generate_gap_review(self, request: GapReviewRequest) -> SavedAnalysis:
-        """Generate a gap review analysis using Vertex AI"""
+    async def perform_gap_review(self, request: GapReviewRequest) -> GapReviewResult:
+        """
+        Perform comprehensive gap review using multi-document RAG analysis
+        
+        Args:
+            request: Gap review request with company documents and regulatory targets
+            
+        Returns:
+            Comprehensive gap analysis results
+        """
+        logger.info(f"Starting multi-document gap review with {len(request.companyDocuments)} documents")
+        
         try:
-            target_docs = [doc for doc in request.allCompanyDocs if doc.id in request.companyDocIds]
-            if not target_docs:
-                raise ValueError("Missing company documents.")
+            # Step 1: Validate and prepare documents
+            validated_docs = self._validate_and_prepare_documents(request.companyDocuments)
             
-            # Check if Vertex AI is available
-            if not self.vertex_ai_service or not hasattr(self.vertex_ai_service, 'analyze_gap_review'):
-                logger.warning("Vertex AI service not available, falling back to mock")
-                return self._generate_mock_gap_review(target_docs, request)
+            if not validated_docs:
+                return self._create_empty_gap_review("No valid documents provided for analysis")
             
-            logger.info(f"Starting real gap review analysis for {len(target_docs)} documents")
+            # Step 2: Extract regulatory target areas
+            regulatory_targets = self._extract_regulatory_targets(request.selectedTargetIds)
             
-            # Perform real AI analysis for gap review
-            analysis_result = self.vertex_ai_service.analyze_gap_review(
-                company_docs=target_docs,
-                regulatory_content=request.allAustracContent,
-                target_regulatory_ids=request.targetRegulatoryIds
+            # Step 3: Perform RAG-based gap analysis
+            gap_analysis_result = await self._perform_rag_gap_analysis(
+                company_documents=validated_docs,
+                regulatory_targets=regulatory_targets,
+                austrac_content=request.allAustracContent
             )
             
-            # Convert AI response to structured format
-            suggested_changes = []
-            for change_data in analysis_result.get("suggested_changes", []):
-                suggested_changes.append(SuggestedChange(
-                    id=change_data["id"],
-                    document_section=change_data["document_section"],
-                    current_status_summary=change_data["current_status_summary"],
-                    austrac_relevance=change_data["austrac_relevance"],
-                    suggested_modification=change_data["suggested_modification"],
-                    priority=change_data["priority"],
-                    source_document_name=change_data.get("source_document_name", ""),
-                    basis_of_suggestion=change_data.get("basis_of_suggestion", "Regulatory Analysis")
-                ))
-
-            action_plan = []
-            for action_data in analysis_result.get("action_plan", []):
-                action_plan.append(ActionPlanItem(
-                    id=action_data["id"],
-                    task=action_data["task"],
-                    responsible=action_data["responsible"],
-                    timeline=action_data["timeline"],
-                    priority_level=action_data["priority_level"]
-                ))
+            # Step 4: Convert to GapReviewResult format
+            gap_review_result = self._convert_to_gap_review_result(gap_analysis_result, request)
             
-            # Group suggestions by document
-            grouped_suggestions = {}
-            for change in suggested_changes:
-                doc_name = change.source_document_name
-                if doc_name not in grouped_suggestions:
-                    grouped_suggestions[doc_name] = []
-                grouped_suggestions[doc_name].append(change)
-            
-            # Create result
-            challenge_result = ChallengeAnalysisResult(
-                suggested_changes=suggested_changes,
-                action_plan=action_plan,
-                groupedSuggestions=grouped_suggestions
-            )
-            
-            analysis_id = str(uuid.uuid4())
-            timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            
-            return SavedAnalysis(
-                id=analysis_id,
-                name=f"Gap Review - {timestamp[:10]}",
-                timestamp=timestamp,
-                type='challenge',
-                challengeAnalysisResult=challenge_result,
-                groundingMetadata=analysis_result.get("grounding_metadata"),
-                userPrompt="Regulatory target gap review analysis",
-                systemPrompt="AI-powered compliance gap analysis using Vertex AI Search and Gemini"
-            )
+            logger.info("Multi-document gap review completed successfully")
+            return gap_review_result
             
         except Exception as e:
-            logger.error(f"Error generating gap review: {e}")
-            # Fallback to mock on error
-            target_docs = [doc for doc in request.allCompanyDocs if doc.id in request.companyDocIds]
-            if target_docs:
-                return self._generate_mock_gap_review(target_docs, request)
-            else:
-                raise Exception(f"Failed to generate gap review: {str(e)}")
-
-    def _generate_mock_gap_review(self, target_docs: List, request: GapReviewRequest) -> SavedAnalysis:
-        """Fallback mock gap review when Vertex AI is not available"""
-        mock_change_id = str(uuid.uuid4())
-        doc_name = target_docs[0].name
+            logger.error(f"Gap review failed: {e}")
+            return self._create_error_gap_review(str(e))
+    
+    async def _perform_rag_gap_analysis(
+        self, 
+        company_documents: List[Dict[str, Any]], 
+        regulatory_targets: List[str],
+        austrac_content: List[AustracUpdate]
+    ) -> Dict[str, Any]:
+        """Perform comprehensive RAG-based gap analysis"""
         
-        mock_result = ChallengeAnalysisResult(
-            suggested_changes=[
-                SuggestedChange(
-                    id=f"grsc-{mock_change_id}",
-                    document_section="Section 3.1: Customer Identification",
-                    current_status_summary="The current policy requires two forms of ID for verification.",
-                    austrac_relevance="The new AUSTRAC guidance emphasizes the need for digital identity verification methods.",
-                    suggested_modification="Incorporate a new sub-section for verifying customers using the Australian Government's Digital Identity Framework.",
-                    priority="High",
-                    source_document_name=doc_name
-                )
-            ],
-            action_plan=[
-                ActionPlanItem(
-                    id=f"grap-{uuid.uuid4()}",
-                    task="Develop a new procedure for digital identity verification.",
-                    responsible="Compliance Team Lead",
-                    timeline="3 Months",
-                    priority_level="High"
-                )
-            ],
-            groupedSuggestions={
-                doc_name: [
-                    SuggestedChange(
-                        id=f"grsc-{mock_change_id}",
-                        document_section="Section 3.1: Customer Identification",
-                        current_status_summary="The current policy requires two forms of ID for verification.",
-                        austrac_relevance="The new AUSTRAC guidance emphasizes the need for digital identity verification methods.",
-                        suggested_modification="Incorporate a new sub-section for verifying customers using the Australian Government's Digital Identity Framework.",
-                        priority="High",
-                        source_document_name=doc_name
-                    )
-                ]
-            }
+        # Step 1: Ingest documents into RAG system if needed
+        logger.info("Ensuring documents are available in RAG system")
+        
+        # Prepare documents for RAG ingestion
+        rag_documents = []
+        
+        # Add company documents
+        for doc in company_documents:
+            rag_documents.append({
+                "id": f"company_{doc['id']}",
+                "content": doc.get("textContent", ""),
+                "metadata": {
+                    "name": doc.get("name", "Unknown"),
+                    "type": "company_document",
+                    "size": doc.get("size", 0),
+                    "document_type": "policy"
+                }
+            })
+        
+        # Add AUSTRAC content as regulatory documents
+        for austrac_doc in austrac_content:
+            rag_documents.append({
+                "id": f"austrac_{austrac_doc.id}",
+                "content": austrac_doc.rawContent,
+                "metadata": {
+                    "name": austrac_doc.title,
+                    "type": "regulatory_document",
+                    "date_added": austrac_doc.dateAdded,
+                    "document_type": "regulatory"
+                }
+            })
+        
+        # Ingest documents into RAG system
+        ingestion_result = self.vertex_ai_service.ingest_documents(rag_documents)
+        logger.info(f"Document ingestion result: {ingestion_result.get('success', False)}")
+        
+        # Step 2: Perform gap analysis using RAG
+        gap_analysis = self.vertex_ai_service.analyze_regulatory_gap(
+            company_documents=company_documents,
+            regulatory_targets=regulatory_targets
         )
         
-        analysis_id = str(uuid.uuid4())
-        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        return gap_analysis
+    
+    def _validate_and_prepare_documents(self, documents: List[CompanyDocument]) -> List[Dict[str, Any]]:
+        """Validate and prepare documents for RAG analysis"""
+        validated_docs = []
         
-        return SavedAnalysis(
-            id=analysis_id,
-            name=f"Gap Review - {timestamp} (Mock)",
-            timestamp=timestamp,
-            type='challenge',
-            challengeAnalysisResult=mock_result,
-            userPrompt="[Gap Review analysis generated - Mock Mode]",
-            systemPrompt="[System prompt for gap review - Mock Mode]"
+        for doc in documents:
+            # Check for required content
+            if not hasattr(doc, 'textContent') or not doc.textContent.strip():
+                logger.warning(f"Document {doc.name} has no text content, skipping")
+                continue
+            
+            # Check document size
+            if len(doc.textContent) < 100:
+                logger.warning(f"Document {doc.name} is too short, skipping")
+                continue
+            
+            validated_docs.append({
+                "id": doc.id,
+                "name": doc.name,
+                "textContent": doc.textContent,
+                "size": getattr(doc, 'size', len(doc.textContent)),
+                "lastModified": getattr(doc, 'lastModified', datetime.now().isoformat())
+            })
+        
+        logger.info(f"Validated {len(validated_docs)} out of {len(documents)} documents")
+        return validated_docs
+    
+    def _extract_regulatory_targets(self, target_ids: List[str]) -> List[str]:
+        """Extract and map regulatory target IDs to readable descriptions"""
+        target_mapping = {
+            "customer-identification": "Customer Identification and Verification",
+            "transaction-monitoring": "Transaction Monitoring and Suspicious Activity Reporting",
+            "record-keeping": "Record Keeping and Data Retention",
+            "risk-assessment": "Risk Assessment and Customer Due Diligence",
+            "aml-compliance": "Anti-Money Laundering Compliance Framework", 
+            "sanctions-screening": "Sanctions Screening and Prohibited Persons",
+            "reporting-obligations": "Regulatory Reporting Obligations to AUSTRAC and ASIC"
+        }
+        
+        regulatory_targets = []
+        for target_id in target_ids:
+            readable_target = target_mapping.get(target_id, target_id.replace('-', ' ').title())
+            regulatory_targets.append(readable_target)
+        
+        return regulatory_targets
+    
+    def _convert_to_gap_review_result(self, rag_analysis: Dict[str, Any], request: GapReviewRequest) -> GapReviewResult:
+        """Convert RAG analysis results to GapReviewResult format"""
+        
+        overall_assessment = rag_analysis.get("overall_assessment", {})
+        gap_analysis = rag_analysis.get("gap_analysis", [])
+        
+        # Convert gap analysis to suggested changes
+        suggested_changes = []
+        for gap in gap_analysis:
+            suggested_changes.append(SuggestedChange(
+                id=f"gap_{hash(gap.get('regulatory_area', ''))}",
+                document_section=gap.get("regulatory_area", "General"),
+                current_status_summary=gap.get("gap_description", "Gap identified"),
+                austrac_relevance=f"Regulatory requirement: {gap.get('regulatory_area', 'General compliance')}",
+                suggested_modification=gap.get("recommended_action", "Address compliance gap"),
+                priority=gap.get("gap_severity", "Medium"),
+                basis_of_suggestion="RAG Gap Analysis"
+            ))
+        
+        # Convert implementation roadmap to action plan
+        action_plan = []
+        roadmap = rag_analysis.get("implementation_roadmap", [])
+        for phase in roadmap:
+            for activity in phase.get("key_activities", []):
+                action_plan.append(ActionPlanItem(
+                    id=f"roadmap_{hash(activity)}",
+                    task=activity,
+                    responsible="Compliance Team",
+                    timeline=phase.get("duration", "30 days"),
+                    priority_level="High" if "Phase 1" in phase.get("phase", "") else "Medium"
+                ))
+        
+        return GapReviewResult(
+            overall_summary=f"Multi-document gap analysis completed. Compliance maturity: {overall_assessment.get('compliance_maturity', 0.75):.0%}",
+            key_themes_and_topics=overall_assessment.get("key_strengths", []) + overall_assessment.get("critical_gaps", []),
+            suggested_changes=suggested_changes,
+            action_plan=action_plan,
+            additional_observations=f"Analysis covered {len(request.companyDocuments)} company documents against {len(request.selectedTargetIds)} regulatory areas. Overall risk level: {overall_assessment.get('overall_risk_level', 'Medium')}",
+            referenced_regulatory_inputs=self._extract_referenced_inputs(request.allAustracContent, rag_analysis)
         )
-
-    def generate_deep_dive(self, request: DeepDiveRequest) -> SavedAnalysis:
-        """Generate a real deep dive analysis using Vertex AI"""
+    
+    async def perform_deep_dive_analysis(self, request: DeepDiveRequest) -> DeepDiveAnalysisResult:
+        """
+        Perform deep dive analysis with enhanced RAG capabilities
+        
+        Args:
+            request: Deep dive analysis request
+            
+        Returns:
+            Detailed analysis of specific document with RAG enhancement
+        """
+        logger.info(f"Starting RAG-enhanced deep dive analysis")
+        
         try:
-            # 1. Find target document
-            target_doc = next((doc for doc in request.allCompanyDocs if doc.id == request.docId), None)
+            # Find target document
+            target_doc = None
+            for doc in request.companyDocuments:
+                if doc.id == request.targetDocumentId:
+                    target_doc = doc
+                    break
+            
             if not target_doc:
-                raise ValueError("Target document not found.")
-
-            logger.info(f"Starting real deep dive analysis for document: {target_doc.name}")
-
-            # 2. Check if Vertex AI is available
-            if not self.vertex_ai_service or not hasattr(self.vertex_ai_service, 'analyze_document_compliance'):
-                logger.warning("Vertex AI service not available, falling back to enhanced mock")
-                return self._generate_enhanced_mock_deep_dive(target_doc, request)
-
-            # 3. Perform real AI analysis
+                raise ValueError(f"Target document {request.targetDocumentId} not found")
+            
+            # Prepare context with all available documents
+            context_documents = []
+            
+            # Add all company documents to context
+            for doc in request.companyDocuments:
+                context_documents.append({
+                    "id": f"company_{doc.id}",
+                    "content": doc.textContent,
+                    "metadata": {
+                        "name": doc.name,
+                        "type": "company_document",
+                        "is_target": doc.id == request.targetDocumentId
+                    }
+                })
+            
+            # Add AUSTRAC content
+            for austrac_doc in request.allAustracContent:
+                context_documents.append({
+                    "id": f"austrac_{austrac_doc.id}",
+                    "content": austrac_doc.rawContent,
+                    "metadata": {
+                        "name": austrac_doc.title,
+                        "type": "regulatory_document"
+                    }
+                })
+            
+            # Ingest context documents for analysis
+            ingestion_result = self.vertex_ai_service.ingest_documents(context_documents)
+            
+            # Perform RAG-enhanced analysis
             analysis_result = self.vertex_ai_service.analyze_document_compliance(
                 document_content=target_doc.textContent,
                 document_name=target_doc.name
             )
-
-            # 4. Convert AI response to structured format
-            suggested_changes = []
-            for change_data in analysis_result.get("suggested_changes", []):
-                suggested_changes.append(SuggestedChange(
-                    id=change_data["id"],
-                    document_section=change_data["document_section"],
-                    current_status_summary=change_data["current_status_summary"],
-                    austrac_relevance=change_data["austrac_relevance"],
-                    suggested_modification=change_data["suggested_modification"],
-                    priority=change_data["priority"],
-                    basis_of_suggestion=change_data.get("basis_of_suggestion", "General Knowledge")
-                ))
-
-            action_plan = []
-            for action_data in analysis_result.get("action_plan", []):
-                action_plan.append(ActionPlanItem(
-                    id=action_data["id"],
-                    task=action_data["task"],
-                    responsible=action_data["responsible"],
-                    timeline=action_data["timeline"],
-                    priority_level=action_data["priority_level"]
-                ))
-
-            # 5. Create DeepDiveAnalysisResult
-            deep_dive_result = DeepDiveAnalysisResult(
-                documentTitleAnalyzed=target_doc.name,
-                overallSummary=analysis_result.get("overall_summary", "Analysis completed"),
-                keyThemesAndTopics=analysis_result.get("key_themes", []),
-                suggested_changes=suggested_changes,
-                action_plan=action_plan,
-                additionalObservations=analysis_result.get("additional_observations", ""),
-                referencedRegulatoryInputs=self._extract_referenced_inputs(request.allAustracContent, analysis_result)
-            )
-
-            # 6. Create SavedAnalysis object
-            analysis_id = str(uuid.uuid4())
-            timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
             
-            return SavedAnalysis(
-                id=analysis_id,
-                name=f"Deep Dive: {target_doc.name} - {timestamp[:10]}",
-                timestamp=timestamp,
-                type='deepDive',
-                deepDiveAnalysisResult=deep_dive_result,
-                selectedDocumentSnapshot={
-                    "id": target_doc.id, 
-                    "name": target_doc.name, 
-                    "type": target_doc.type, 
-                    "lastModified": target_doc.lastModified, 
-                    "size": target_doc.size
-                },
-                groundingMetadata=analysis_result.get("grounding_metadata"),
-                systemPrompt="Real-time compliance analysis using Vertex AI Search and Gemini",
-                userPrompt=f"Analyze document '{target_doc.name}' for compliance gaps and improvement opportunities"
-            )
+            # Convert to DeepDiveAnalysisResult format
+            deep_dive_result = self._convert_to_deep_dive_result(analysis_result, target_doc, request)
+            
+            logger.info("RAG-enhanced deep dive analysis completed")
+            return deep_dive_result
             
         except Exception as e:
-            logger.error(f"Error generating deep dive: {e}")
-            # Fallback to enhanced mock
-            target_doc = next((doc for doc in request.allCompanyDocs if doc.id == request.docId), None)
-            if target_doc:
-                return self._generate_enhanced_mock_deep_dive(target_doc, request)
-            else:
-                raise Exception(f"Failed to generate deep dive: {str(e)}")
-
-    def _generate_enhanced_mock_deep_dive(self, target_doc, request: DeepDiveRequest) -> SavedAnalysis:
-        """Generate an enhanced mock deep dive analysis when Vertex AI is not available"""
+            logger.error(f"Deep dive analysis failed: {e}")
+            return self._create_error_deep_dive(str(e))
+    
+    def _convert_to_deep_dive_result(
+        self, 
+        rag_analysis: Dict[str, Any], 
+        target_doc: CompanyDocument, 
+        request: DeepDiveRequest
+    ) -> DeepDiveAnalysisResult:
+        """Convert RAG analysis to DeepDiveAnalysisResult format"""
         
-        # Create more realistic mock suggestions based on document content
-        doc_content_lower = target_doc.textContent.lower()
-        suggestions = []
-        actions = []
+        # Convert suggested changes
+        suggested_changes = []
+        for change_data in rag_analysis.get("suggested_changes", []):
+            suggested_changes.append(SuggestedChange(
+                id=change_data.get("id", f"change_{hash(str(change_data))}"),
+                document_section=change_data.get("document_section", "General"),
+                current_status_summary=change_data.get("current_status_summary", "Current state"),
+                austrac_relevance=change_data.get("austrac_relevance", "General compliance"),
+                suggested_modification=change_data.get("suggested_modification", "Review and update"),
+                priority=change_data.get("priority", "Medium"),
+                basis_of_suggestion=change_data.get("basis_of_suggestion", "RAG Analysis")
+            ))
         
-        # Content-based analysis for suggestions
-        if "customer" in doc_content_lower and "identification" in doc_content_lower:
-            suggestions.append(SuggestedChange(
-                id=f"ddsc-{str(uuid.uuid4())[:8]}",
-                document_section="Customer Identification Procedures",
-                current_status_summary="Current procedures require manual verification",
-                austrac_relevance="AUSTRAC requires enhanced due diligence and digital verification capabilities",
-                suggested_modification="Implement digital identity verification using government frameworks and biometric validation",
-                priority="High",
-                basis_of_suggestion="Regulation"
+        # Convert action plan
+        action_plan = []
+        for action_data in rag_analysis.get("action_plan", []):
+            action_plan.append(ActionPlanItem(
+                id=action_data.get("id", f"action_{hash(str(action_data))}"),
+                task=action_data.get("task", "Review requirement"),
+                responsible=action_data.get("responsible", "Compliance Team"),
+                timeline=action_data.get("timeline", "30 days"),
+                priority_level=action_data.get("priority_level", "Medium")
             ))
-            actions.append(ActionPlanItem(
-                id=f"ddap-{str(uuid.uuid4())[:8]}",
-                task="Upgrade customer identification systems to support digital verification",
-                responsible="IT and Compliance Teams",
-                timeline="6 Months",
-                priority_level="High"
-            ))
-
-        if "risk" in doc_content_lower:
-            suggestions.append(SuggestedChange(
-                id=f"ddsc-{str(uuid.uuid4())[:8]}",
-                document_section="Risk Assessment Framework",
-                current_status_summary="Risk assessment methodology outlined",
-                austrac_relevance="Enhanced risk-based approach required for transaction monitoring",
-                suggested_modification="Implement dynamic risk scoring with machine learning capabilities for real-time assessment",
-                priority="Medium",
-                basis_of_suggestion="Industry Best Practice"
-            ))
-
-        if "transaction" in doc_content_lower or "monitor" in doc_content_lower:
-            suggestions.append(SuggestedChange(
-                id=f"ddsc-{str(uuid.uuid4())[:8]}",
-                document_section="Transaction Monitoring",
-                current_status_summary="Basic transaction monitoring described",
-                austrac_relevance="AUSTRAC requires sophisticated transaction monitoring for suspicious activity detection",
-                suggested_modification="Enhance monitoring algorithms to include behavioral analysis and pattern recognition",
-                priority="High",
-                basis_of_suggestion="Legislation"
-            ))
-
-        if "record" in doc_content_lower:
-            suggestions.append(SuggestedChange(
-                id=f"ddsc-{str(uuid.uuid4())[:8]}",
-                document_section="Record Keeping Requirements",
-                current_status_summary="Basic record keeping mentioned",
-                austrac_relevance="AUSTRAC requires specific record retention periods and formats",
-                suggested_modification="Specify 7-year retention period for transaction records and customer identification documents",
-                priority="Medium",
-                basis_of_suggestion="Legislation"
-            ))
-
-        # Default suggestions if no specific content detected
-        if not suggestions:
-            suggestions.append(SuggestedChange(
-                id=f"ddsc-{str(uuid.uuid4())[:8]}",
-                document_section="General Compliance Review",
-                current_status_summary="Document reviewed for compliance gaps",
-                austrac_relevance="All financial service policies should align with current regulatory requirements",
-                suggested_modification="Conduct comprehensive review against latest AUSTRAC guidance and industry best practices",
-                priority="Medium",
-                basis_of_suggestion="General Knowledge"
-            ))
-
-        if not actions:
-            actions.append(ActionPlanItem(
-                id=f"ddap-{str(uuid.uuid4())[:8]}",
-                task="Schedule quarterly compliance review of this document",
-                responsible="Compliance Officer",
-                timeline="Next Quarter",
-                priority_level="Medium"
-            ))
-
-        # Create result
-        deep_dive_result = DeepDiveAnalysisResult(
+        
+        return DeepDiveAnalysisResult(
             documentTitleAnalyzed=target_doc.name,
-            overallSummary=f"Enhanced analysis of {target_doc.name} identifies several areas for compliance improvement, particularly around customer identification and risk management procedures.",
-            keyThemesAndTopics=["Customer Due Diligence", "Risk Assessment", "Record Keeping", "Regulatory Compliance"],
-            suggested_changes=suggestions,
-            action_plan=actions,
-            additionalObservations="This analysis was generated using enhanced mock logic based on document content analysis. For full AI-powered analysis, ensure Vertex AI services are properly configured.",
-            referencedRegulatoryInputs=self._extract_referenced_inputs(request.allAustracContent, {})
+            overallSummary=rag_analysis.get("overall_summary", f"Analysis completed for {target_doc.name}"),
+            keyThemesAndTopics=rag_analysis.get("key_themes", ["Document analysis"]),
+            suggested_changes=suggested_changes,
+            action_plan=action_plan,
+            additionalObservations=rag_analysis.get("additional_observations", ""),
+            referencedRegulatoryInputs=self._extract_referenced_inputs(request.allAustracContent, rag_analysis)
         )
-
-        analysis_id = str(uuid.uuid4())
-        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    
+    def _extract_referenced_inputs(self, austrac_content: List[AustracUpdate], analysis: Dict[str, Any]) -> List[str]:
+        """Extract regulatory references from analysis"""
+        references = []
         
-        return SavedAnalysis(
-            id=analysis_id,
-            name=f"Deep Dive: {target_doc.name} - {timestamp[:10]} (Enhanced Mock)",
-            timestamp=timestamp,
-            type='deepDive',
-            deepDiveAnalysisResult=deep_dive_result,
-            selectedDocumentSnapshot={
-                "id": target_doc.id, 
-                "name": target_doc.name, 
-                "type": target_doc.type, 
-                "lastModified": target_doc.lastModified, 
-                "size": target_doc.size
-            },
-            systemPrompt="Enhanced mock analysis with content-based suggestions",
-            userPrompt=f"Analyze document '{target_doc.name}' for compliance gaps and improvement opportunities"
+        # Add references from source chunks if available
+        source_chunks = analysis.get("source_chunks", [])
+        for chunk in source_chunks:
+            metadata = chunk.get("metadata", {})
+            if metadata.get("type") == "regulatory_document":
+                doc_name = metadata.get("name", "Unknown Regulatory Document")
+                if doc_name not in references:
+                    references.append(doc_name)
+        
+        # Fallback to AUSTRAC document titles
+        if not references and austrac_content:
+            references = [doc.title for doc in austrac_content[:5]]
+        
+        return references
+    
+    def _create_empty_gap_review(self, message: str) -> GapReviewResult:
+        """Create empty gap review result"""
+        return GapReviewResult(
+            overall_summary=f"Gap review could not be completed: {message}",
+            key_themes_and_topics=["Analysis incomplete"],
+            suggested_changes=[],
+            action_plan=[],
+            additional_observations=message,
+            referenced_regulatory_inputs=[]
         )
-
-    def _extract_referenced_inputs(self, all_austrac_content, analysis_result) -> List[str]:
-        """
-        Extract which regulatory inputs were referenced in the analysis
-        This is a placeholder - in a full implementation, you'd track which 
-        documents from your data store were actually used
-        """
-        # For now, return a simple list based on available content
-        if all_austrac_content and len(all_austrac_content) > 0:
-            return [doc.title for doc in all_austrac_content[:3]]  # Return first 3 as example
-        else:
-            return ["General regulatory knowledge", "AUSTRAC guidelines", "ASIC requirements"]
-
-    def generate_draft(self, request: DraftRequest) -> str:
-        """Generate draft text using Vertex AI"""
+    
+    def _create_error_gap_review(self, error_message: str) -> GapReviewResult:
+        """Create error gap review result"""
+        import uuid
+        
+        return GapReviewResult(
+            overall_summary=f"Gap review encountered an error: {error_message}",
+            key_themes_and_topics=["Error encountered", "Manual review required"],
+            suggested_changes=[
+                SuggestedChange(
+                    id=f"error_{str(uuid.uuid4())[:8]}",
+                    document_section="System Error",
+                    current_status_summary="Analysis failed",
+                    austrac_relevance="Manual review required",
+                    suggested_modification="Conduct manual gap analysis",
+                    priority="High",
+                    basis_of_suggestion="System error fallback"
+                )
+            ],
+            action_plan=[
+                ActionPlanItem(
+                    id=f"error_action_{str(uuid.uuid4())[:8]}",
+                    task="Investigate analysis failure and conduct manual review",
+                    responsible="Technical Team & Compliance Team",
+                    timeline="3 days",
+                    priority_level="High"
+                )
+            ],
+            additional_observations=f"System error occurred during analysis: {error_message}",
+            referenced_regulatory_inputs=[]
+        )
+    
+    def _create_error_deep_dive(self, error_message: str) -> DeepDiveAnalysisResult:
+        """Create error deep dive result"""
+        import uuid
+        
+        return DeepDiveAnalysisResult(
+            documentTitleAnalyzed="Analysis Error",
+            overallSummary=f"Deep dive analysis failed: {error_message}",
+            keyThemesAndTopics=["Error encountered", "Manual analysis required"],
+            suggested_changes=[
+                SuggestedChange(
+                    id=f"error_{str(uuid.uuid4())[:8]}",
+                    document_section="System Error",
+                    current_status_summary="Analysis failed",
+                    austrac_relevance="Manual review required",
+                    suggested_modification="Conduct manual document analysis",
+                    priority="High",
+                    basis_of_suggestion="System error fallback"
+                )
+            ],
+            action_plan=[
+                ActionPlanItem(
+                    id=f"error_action_{str(uuid.uuid4())[:8]}",
+                    task="Investigate analysis failure and conduct manual review",
+                    responsible="Technical Team & Compliance Team",
+                    timeline="3 days",
+                    priority_level="High"
+                )
+            ],
+            additionalObservations=f"Deep dive analysis failed: {error_message}",
+            referencedRegulatoryInputs=[]
+        )
+    
+    async def health_check(self) -> Dict[str, Any]:
+        """Perform health check on analysis service"""
         try:
-            if not self.vertex_ai_service or not hasattr(self.vertex_ai_service, 'model') or not self.vertex_ai_service.model:
-                # Fallback to mock if AI not available
-                return self._generate_mock_draft(request)
-
-            # Access the changeToDraft as a dict since it comes from frontend
-            change_data = request.changeToDraft
-
-            # Build prompt for draft generation
-            draft_prompt = f"""You are a compliance document editor. Your task is to rewrite a section of a document based on a specific suggestion.
-
-**Original Document:** {request.originalDocument.name}
-**Original Content:** {request.originalDocument.textContent[:4000]}
-
-**Suggestion to Implement:**
-- Section: {change_data.get('document_section', 'General')}
-- Current Status: {change_data.get('current_status_summary', '')}
-- Suggested Change: {change_data.get('suggested_modification', '')}
-
-**Your Task:**
-Rewrite the document incorporating the suggested change. Keep the same structure and tone but implement the specific modification suggested. Return the complete updated document text.
-
-**Updated Document:**"""
-
-            # Generate draft using Vertex AI
-            new_draft = self.vertex_ai_service.generate_content(draft_prompt)
+            # Check Vertex AI service health
+            vertex_health = self.vertex_ai_service.health_check()
             
-            return new_draft
+            analysis_healthy = vertex_health.get("status") == "healthy"
+            
+            return {
+                "status": "healthy" if analysis_healthy else "unhealthy",
+                "service_type": "RAG-Enhanced Analysis Service",
+                "vertex_ai_service": vertex_health,
+                "capabilities": {
+                    "multi_document_analysis": True,
+                    "rag_enhanced": True,
+                    "max_documents": self.max_documents_per_analysis,
+                    "concurrent_analyses": self.max_concurrent_analyses
+                },
+                "message": "Analysis Service with RAG capabilities"
+            }
             
         except Exception as e:
-            logger.error(f"Error generating draft: {e}")
-            # Fallback to mock draft
-            return self._generate_mock_draft(request)
-
-    def _generate_mock_draft(self, request: DraftRequest) -> str:
-        """Fallback mock draft generation"""
-        original_text = request.originalDocument.textContent
-        change_data = request.changeToDraft
-        suggestion = change_data.get('suggested_modification', 'No specific change provided')
-        section = change_data.get('document_section', 'General')
-        
-        return f"""--- UPDATED DRAFT (AI-Enhanced) ---
-
-{original_text}
-
---- IMPLEMENTED CHANGE FOR: {section} ---
-{suggestion}
-
---- END OF DRAFT ---
-
-Note: This draft incorporates the suggested modification. Please review and adjust as needed before final implementation."""
+            logger.error(f"Analysis service health check failed: {e}")
+            return {
+                "status": "unhealthy",
+                "error": str(e),
+                "message": "Analysis service health check failed"
+            }
