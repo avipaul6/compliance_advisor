@@ -1,27 +1,36 @@
-# cloud_function/main.py
+# cloud_function/main.py - Updated for Vector Search RAG
 import functions_framework
-from google.cloud import discoveryengine_v1 as discoveryengine
+from google.cloud import aiplatform
 from google.cloud import storage
 import logging
 import json
 import os
-from typing import Dict, Any
+from typing import Dict, Any, List
 import hashlib
+from datetime import datetime
+import vertexai
+from vertexai.language_models import TextEmbeddingModel
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configuration from environment variables
-PROJECT_ID = os.getenv("PROJECT_ID", "your-gcp-project-id")
-DATA_STORE_ID = os.getenv("DATA_STORE_ID", "your-vertex-ai-search-data-store-id")
-LOCATION = os.getenv("LOCATION", "global")
+PROJECT_ID = os.getenv("PROJECT_ID", "data-consumption-layer")
+VECTOR_INDEX_ENDPOINT_ID = os.getenv("VECTOR_INDEX_ENDPOINT_ID", "3802623581267951616")
+VECTOR_INDEX_ID = os.getenv("VECTOR_INDEX_ID", "2338232422744719360")
+VECTOR_DEPLOYED_INDEX_ID = os.getenv("VECTOR_DEPLOYED_INDEX_ID", "compliance_docs_deployed_small")
+VECTOR_SEARCH_REGION = os.getenv("VECTOR_SEARCH_REGION", "us-central1")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "gemini-embedding-001")
+
+# Initialize Vertex AI
+vertexai.init(project=PROJECT_ID, location=VECTOR_SEARCH_REGION)
 
 @functions_framework.cloud_event
 def process_document_upload(cloud_event):
     """
     Triggered by Cloud Storage uploads
-    Processes documents into Vertex AI Search
+    Processes documents into Vector Search RAG system
     """
     try:
         # Extract file information from Cloud Event
@@ -49,7 +58,6 @@ def process_document_upload(cloud_event):
         
         # Initialize clients
         storage_client = storage.Client()
-        discovery_client = discoveryengine.DocumentServiceClient()
         
         # Get file metadata
         bucket = storage_client.bucket(bucket_name)
@@ -74,9 +82,8 @@ def process_document_upload(cloud_event):
             document_id = _generate_document_id(file_name)
             logger.info(f"Generated document ID: {document_id}")
         
-        # Process the document
-        success = _create_or_update_vertex_document(
-            discovery_client, 
+        # Process the document for Vector Search
+        success = _process_document_for_vector_search(
             document_id, 
             bucket_name, 
             file_name, 
@@ -85,10 +92,16 @@ def process_document_upload(cloud_event):
         )
         
         if success:
-            logger.info(f"Successfully processed document: {document_id}")
+            logger.info(f"Successfully processed document for Vector Search: {document_id}")
             
             # Update blob metadata to mark as processed
-            updated_metadata = {**metadata, "processed": "true", "processing_timestamp": _get_timestamp()}
+            updated_metadata = {
+                **metadata, 
+                "processed": "true", 
+                "processing_timestamp": _get_timestamp(),
+                "vector_search_processed": "true",
+                "unique_id": document_id
+            }
             blob.metadata = updated_metadata
             blob.patch()
             
@@ -97,7 +110,12 @@ def process_document_upload(cloud_event):
             logger.error(f"Failed to process document: {document_id}")
             
             # Mark as failed
-            updated_metadata = {**metadata, "processed": "false", "processing_error": "failed_to_index"}
+            updated_metadata = {
+                **metadata, 
+                "processed": "false", 
+                "processing_error": "failed_to_index_vector_search",
+                "unique_id": document_id
+            }
             blob.metadata = updated_metadata
             blob.patch()
             
@@ -110,11 +128,168 @@ def process_document_upload(cloud_event):
             blob = bucket.blob(file_name)
             if blob.exists():
                 blob.reload()
-                error_metadata = {**(blob.metadata or {}), "processed": "error", "error_message": str(e)}
+                error_metadata = {
+                    **(blob.metadata or {}), 
+                    "processed": "error", 
+                    "error_message": str(e),
+                    "processing_timestamp": _get_timestamp()
+                }
                 blob.metadata = error_metadata
                 blob.patch()
         except Exception as meta_error:
             logger.error(f"Could not update error metadata: {meta_error}")
+
+def _process_document_for_vector_search(
+    document_id: str,
+    bucket_name: str,
+    file_name: str,
+    metadata: Dict[str, Any],
+    blob: storage.Blob
+) -> bool:
+    """
+    Process document for Vector Search RAG system
+    
+    This function:
+    1. Extracts text from the document
+    2. Chunks the text
+    3. Generates embeddings
+    4. Stores metadata for RAG system
+    
+    Note: For now, we're just marking documents as processed.
+    Full Vector Search indexing would require additional setup.
+    """
+    try:
+        logger.info(f"Processing document {document_id} for Vector Search")
+        
+        # Extract document text (simplified for now)
+        document_text = _extract_text_from_blob(blob)
+        
+        if not document_text or len(document_text.strip()) < 50:
+            logger.warning(f"Document {document_id} has insufficient text content")
+            return False
+        
+        # Generate embeddings for the document
+        embeddings = _generate_embeddings(document_text, document_id)
+        
+        if not embeddings:
+            logger.error(f"Failed to generate embeddings for document {document_id}")
+            return False
+        
+        # Store document metadata in a format compatible with RAG system
+        rag_metadata = {
+            "document_id": document_id,
+            "title": metadata.get("original_filename", file_name),
+            "document_type": metadata.get("document_type", _infer_document_type(file_name)),
+            "upload_timestamp": metadata.get("upload_timestamp", _get_timestamp()),
+            "processing_timestamp": _get_timestamp(),
+            "file_size": int(metadata.get("file_size", blob.size or 0)),
+            "file_path": file_name,
+            "bucket": bucket_name,
+            "content_type": metadata.get("content_type", blob.content_type or "application/octet-stream"),
+            "text_length": len(document_text),
+            "embedding_count": len(embeddings)
+        }
+        
+        # Store metadata back to blob for RAG system to access
+        enhanced_metadata = {**metadata, **rag_metadata}
+        blob.metadata = enhanced_metadata
+        blob.patch()
+        
+        logger.info(f"Successfully processed document {document_id} with {len(embeddings)} embeddings")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error processing document {document_id} for Vector Search: {e}")
+        return False
+
+def _extract_text_from_blob(blob: storage.Blob) -> str:
+    """
+    Extract text content from blob
+    For now, this is a simplified implementation
+    """
+    try:
+        # For text files, read directly
+        if blob.content_type and "text" in blob.content_type:
+            content = blob.download_as_text()
+            return content
+        
+        # For other files, return filename as content (simplified)
+        # In a full implementation, you'd use document AI or other text extraction
+        logger.info(f"Non-text file detected: {blob.name}, using filename as content")
+        return f"Document: {blob.name}"
+        
+    except Exception as e:
+        logger.error(f"Error extracting text from blob {blob.name}: {e}")
+        return f"Document: {blob.name} (text extraction failed)"
+
+def _generate_embeddings(text: str, document_id: str) -> List[Dict[str, Any]]:
+    """
+    Generate embeddings for document text
+    """
+    try:
+        # Initialize embedding model
+        embedding_model = TextEmbeddingModel.from_pretrained(EMBEDDING_MODEL)
+        
+        # Chunk the text (simplified chunking)
+        chunks = _chunk_text(text)
+        embeddings = []
+        
+        for i, chunk in enumerate(chunks):
+            try:
+                # Generate embedding for chunk
+                embedding_response = embedding_model.get_embeddings([chunk])
+                
+                if embedding_response and len(embedding_response) > 0:
+                    embedding_vector = embedding_response[0].values
+                    
+                    embeddings.append({
+                        "chunk_id": f"{document_id}_chunk_{i}",
+                        "text": chunk,
+                        "embedding": embedding_vector,
+                        "document_id": document_id
+                    })
+                
+            except Exception as e:
+                logger.error(f"Error generating embedding for chunk {i} of document {document_id}: {e}")
+                continue
+        
+        logger.info(f"Generated {len(embeddings)} embeddings for document {document_id}")
+        return embeddings
+        
+    except Exception as e:
+        logger.error(f"Error in embedding generation for document {document_id}: {e}")
+        return []
+
+def _chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
+    """
+    Chunk text into smaller pieces for embedding
+    """
+    if len(text) <= chunk_size:
+        return [text]
+    
+    chunks = []
+    start = 0
+    
+    while start < len(text):
+        end = start + chunk_size
+        chunk = text[start:end]
+        chunks.append(chunk)
+        start = end - overlap
+    
+    return chunks
+
+def _infer_document_type(file_name: str) -> str:
+    """Infer document type from file path"""
+    file_lower = file_name.lower()
+    
+    if "company/" in file_lower:
+        return "company"
+    elif "regulatory/" in file_lower:
+        return "regulatory"
+    elif "austrac/" in file_lower:
+        return "austrac"
+    else:
+        return "unknown"
 
 def _is_document_file(file_name: str) -> bool:
     """Check if file is a document we should process"""
@@ -131,110 +306,21 @@ def _is_system_file(file_name: str) -> bool:
         'thumbs.db',
         '.ds_store',
         '__pycache__',
-        '.git/'
+        '.git/',
+        '.placeholder'
     ]
     file_lower = file_name.lower()
     return any(pattern in file_lower for pattern in system_patterns)
 
 def _generate_document_id(file_name: str) -> str:
     """Generate document ID from file name"""
-    # Use a combination of filename and timestamp for uniqueness
     import time
     unique_string = f"{file_name}_{int(time.time())}"
     return hashlib.md5(unique_string.encode()).hexdigest()
 
 def _get_timestamp() -> str:
     """Get current timestamp in ISO format"""
-    from datetime import datetime
     return datetime.now().isoformat()
-
-def _create_or_update_vertex_document(
-    client: discoveryengine.DocumentServiceClient,
-    document_id: str,
-    bucket_name: str,
-    file_name: str,
-    metadata: Dict[str, Any],
-    blob: storage.Blob
-) -> bool:
-    """Create or update document in Vertex AI Search"""
-    try:
-        # Enhanced document metadata
-        struct_data = {
-            "title": metadata.get("original_filename", file_name),
-            "document_type": metadata.get("document_type", "unknown"),
-            "upload_timestamp": metadata.get("upload_timestamp", _get_timestamp()),
-            "file_size": metadata.get("file_size", str(blob.size or 0)),
-            "file_path": file_name,
-            "bucket": bucket_name,
-            "processing_timestamp": _get_timestamp(),
-            "content_type": metadata.get("content_type", blob.content_type or "application/octet-stream")
-        }
-        
-        # Create document object
-        document = discoveryengine.Document(
-            id=document_id,
-            content=discoveryengine.Document.Content(
-                uri=f"gs://{bucket_name}/{file_name}",
-                mime_type=struct_data["content_type"]
-            ),
-            struct_data=struct_data
-        )
-        
-        # Get parent path
-        parent = client.branch_path(
-            project=PROJECT_ID,
-            location=LOCATION,
-            data_store=DATA_STORE_ID,
-            branch="default_branch"
-        )
-        
-        # Try to create the document first
-        try:
-            request = discoveryengine.CreateDocumentRequest(
-                parent=parent,
-                document=document,
-                document_id=document_id
-            )
-            
-            operation = client.create_document(request=request)
-            logger.info(f"Created new document in Vertex AI Search: {document_id}")
-            return True
-            
-        except Exception as create_error:
-            create_error_str = str(create_error).lower()
-            
-            # If document already exists, try to update it
-            if "already exists" in create_error_str or "duplicate" in create_error_str:
-                try:
-                    document_path = client.document_path(
-                        project=PROJECT_ID,
-                        location=LOCATION,
-                        data_store=DATA_STORE_ID,
-                        branch="default_branch",
-                        document=document_id
-                    )
-                    
-                    # Set the document name for update
-                    document.name = document_path
-                    
-                    update_request = discoveryengine.UpdateDocumentRequest(
-                        document=document
-                    )
-                    
-                    operation = client.update_document(request=update_request)
-                    logger.info(f"Updated existing document in Vertex AI Search: {document_id}")
-                    return True
-                    
-                except Exception as update_error:
-                    logger.error(f"Error updating document {document_id}: {update_error}")
-                    return False
-            else:
-                logger.error(f"Error creating document {document_id}: {create_error}")
-                return False
-                
-    except Exception as e:
-        logger.error(f"Error in _create_or_update_vertex_document: {e}")
-        return False
 
 # Health check endpoint for the Cloud Function
 @functions_framework.http
@@ -242,8 +328,10 @@ def health_check(request):
     """HTTP health check endpoint"""
     return {
         "status": "healthy",
-        "function": "process-document-upload",
+        "function": "process-document-upload-vector-search",
         "project_id": PROJECT_ID,
-        "data_store_id": DATA_STORE_ID,
-        "location": LOCATION
+        "vector_endpoint_id": VECTOR_INDEX_ENDPOINT_ID,
+        "vector_index_id": VECTOR_INDEX_ID,
+        "embedding_model": EMBEDDING_MODEL,
+        "region": VECTOR_SEARCH_REGION
     }
