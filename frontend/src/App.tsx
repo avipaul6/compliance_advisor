@@ -56,8 +56,8 @@ const App: React.FC = () => {
   const [chatMessages, setChatMessages] = useState<{sender: 'user' | 'model', text: string, grounding?: GroundingMetadata, retrievedContext?: DocumentChunk[]}[]>([]);
   const [chatInput, setChatInput] = useState<string>('');
   const [isChatLoading, setIsChatLoading] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<'challenge' | 'deepDive' | 'austracInputs' | 'companyDocs' | 'chat' | 'history'>('challenge'); 
-  
+  const [activeTab, setActiveTab] = useState<'challenge' | 'deepDive' | 'austracInputs' | 'companyDocs' | 'indexStatus' | 'chat' | 'history'>('challenge');
+
   // State for Draft Text Modal (shared)
   const [showDraftModal, setShowDraftModal] = useState<boolean>(false);
   const [currentDraftingChange, setCurrentDraftingChange] = useState<SuggestedChange | null>(null); // Unified to only use SuggestedChange

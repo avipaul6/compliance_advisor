@@ -35,6 +35,15 @@ class Settings(BaseSettings):
         os.getenv("GAE_APPLICATION")  # App Engine
     )
     
+    # backend/app/config.py - Add these lines to your existing config:
+
+    # Vector Search RAG Configuration (add to existing Settings class)
+    VECTOR_INDEX_ENDPOINT_ID: str = os.getenv("VECTOR_INDEX_ENDPOINT_ID", "")
+    VECTOR_INDEX_ID: str = os.getenv("VECTOR_INDEX_ID", "")
+    VECTOR_DEPLOYED_INDEX_ID: str = os.getenv("VECTOR_DEPLOYED_INDEX_ID", "compliance_docs_deployed_small")
+    VECTOR_SEARCH_REGION: str = os.getenv("VECTOR_SEARCH_REGION", "us-central1")
+    EMBEDDING_DIMENSIONS: int = int(os.getenv("EMBEDDING_DIMENSIONS", "3072"))
+
     # API Configuration
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "OFX Compliance Assistant"
