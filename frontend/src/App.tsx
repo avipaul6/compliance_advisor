@@ -26,6 +26,8 @@ import DraftTextModal from './components/DraftTextModal';
 import AnalysisHistoryPage from './components/AnalysisHistoryPage';
 import DocumentDeepDivePage from './components/DocumentDeepDivePage';
 import PromptDisplay from './components/PromptDisplay';
+import DocumentIndexDashboard from './components/DocumentIndexDashboard';
+
 
 // Correctly set the worker URL for Vite
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
@@ -634,6 +636,7 @@ const App: React.FC = () => {
     { id: 'deepDive', name: 'Document Deep Dive', icon: ICONS.documentSearch },
     { id: 'companyDocs', name: 'Company Documents', icon: ICONS.folder },
     { id: 'austracInputs', name: 'Regulatory Input', icon: ICONS.bookOpen },
+    { id: 'indexStatus', name: 'RAG Index', icon: ICONS.database }, 
     { id: 'chat', name: 'Compliance Chatbot', icon: ICONS.chatBubbleLeftRight },
     { id: 'history', name: 'Analysis History', icon: ICONS.archiveBox },
   ];
@@ -781,6 +784,10 @@ const App: React.FC = () => {
                 prompts={currentAnalysisPrompts}
              />
           )}
+
+          {activeTab === 'indexStatus' && (
+              <DocumentIndexDashboard className="mt-6" />
+              )}
 
           {activeTab === 'challenge' && (
             <div className="max-w-6xl mx-auto">

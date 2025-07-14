@@ -45,6 +45,8 @@ export interface IndexedDocument {
     upload_timestamp?: string;
     file_size?: number;
     processing_timestamp?: string;
+    file_path?: string;     // ADD THIS
+    bucket?: string;        // ADD THIS
   };
 }
 
@@ -118,21 +120,22 @@ class UploadService {
     return response.json();
   }
 
+
   async listIndexedDocuments(documentType?: string): Promise<{documents: IndexedDocument[], total_count: number}> {
-    const params = new URLSearchParams();
-    if (documentType) {
-      params.append('document_type', documentType);
-    }
-
-    const url = `${this.API_BASE}/documents/list${params.toString() ? '?' + params.toString() : ''}`;
-    const response = await fetch(url);
-    
-    if (!response.ok) {
-      throw new Error(`Failed to list documents: ${response.statusText}`);
-    }
-
-    return response.json();
+  const params = new URLSearchParams();
+  if (documentType) {
+    params.append('document_type', documentType);
   }
+
+  const url = `/api/v1/rag/indexed-documents${params.toString() ? '?' + params.toString() : ''}`;
+  const response = await fetch(url);
+  
+  if (!response.ok) {
+    throw new Error(`Failed to list indexed documents: ${response.statusText}`);
+  }
+
+  return response.json();
+}
 
   async deleteDocument(documentId: string): Promise<{success: boolean, message: string}> {
     const response = await fetch(`${this.API_BASE}/documents/document/${documentId}`, {
