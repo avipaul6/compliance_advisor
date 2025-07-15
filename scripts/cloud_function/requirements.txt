@@ -1,4 +1,4 @@
-functions-framework==3.*
-google-cloud-aiplatform==1.38.*
-google-cloud-storage==2.*
-vertexai==1.38.*
+functions-framework
+google-cloud-aiplatform
+google-cloud-storage
+PyPDF2
