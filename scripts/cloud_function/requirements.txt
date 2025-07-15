@@ -2,3 +2,5 @@ functions-framework
 google-cloud-aiplatform
 google-cloud-storage
 PyPDF2
+cloudevents
+vertexai
