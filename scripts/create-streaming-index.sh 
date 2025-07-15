@@ -1,0 +1,60 @@
+#!/bin/bash
+# create-streaming-index.sh - Create cost-optimized streaming Vector Search index
+
+PROJECT_ID="data-consumption-layer"
+REGION="us-central1"
+INDEX_NAME="compliance-documents-streaming"
+ENDPOINT_ID="3802623581267951616"  # Use your existing endpoint
+
+# Create metadata file for streaming index with SMALL shard size (cost optimized)
+cat > streaming-index-metadata.json << EOF
+{
+  "config": {
+    "dimensions": 3072,
+    "approximateNeighborsCount": 150,
+    "distanceMeasureType": "COSINE_DISTANCE",
+    "algorithmConfig": {
+      "treeAhConfig": {
+        "leafNodeEmbeddingCount": 500,
+        "leafNodesToSearchPercent": 7
+      }
+    },
+    "shardSize": "SHARD_SIZE_SMALL"
+  },
+  "indexUpdateMethod": "STREAM_UPDATE"
+}
+EOF
+
+echo "🚀 Creating cost-optimized streaming Vector Search index..."
+echo "Project: $PROJECT_ID"
+echo "Region: $REGION"
+echo "Shard Size: SHARD_SIZE_SMALL (cost optimized)"
+
+# Create the index
+gcloud ai indexes create \
+  --display-name="$INDEX_NAME" \
+  --description="Cost-optimized streaming vector index for compliance documents (SHARD_SIZE_SMALL)" \
+  --metadata-file=streaming-index-metadata.json \
+  --region=$REGION \
+  --project=$PROJECT_ID
+
+echo ""
+echo "⏳ Index creation started. This takes 5-10 minutes..."
+echo "Check status with:"
+echo "gcloud ai indexes list --region=$REGION --project=$PROJECT_ID"
+
+echo ""
+echo "📋 After index is created:"
+echo "1. Get the new index ID from the list command above"
+echo "2. Deploy it to your existing endpoint"
+echo "3. Update your Cloud Function with the new index ID"
+
+# Cleanup
+rm streaming-index-metadata.json
+
+echo ""
+echo "💰 Cost Optimization Settings Applied:"
+echo "✅ SHARD_SIZE_SMALL (vs SHARD_SIZE_MEDIUM/LARGE)"
+echo "✅ leafNodeEmbeddingCount: 500 (vs default 1000)"
+echo "✅ approximateNeighborsCount: 150 (vs default higher)"
+echo "✅ STREAM_UPDATE enabled for real-time upserts"

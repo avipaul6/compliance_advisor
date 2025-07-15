@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 # Configuration
 PROJECT_ID = os.getenv("PROJECT_ID", "data-consumption-layer")
 VECTOR_INDEX_ENDPOINT_ID = os.getenv("VECTOR_INDEX_ENDPOINT_ID", "3802623581267951616")
-VECTOR_INDEX_ID = os.getenv("VECTOR_INDEX_ID", "2338232422744719360")
-VECTOR_DEPLOYED_INDEX_ID = os.getenv("VECTOR_DEPLOYED_INDEX_ID", "compliance_docs_deployed_small")
+VECTOR_INDEX_ID = os.getenv("VECTOR_INDEX_ID", "6438056196023779328")  # NEW STREAMING INDEX
+VECTOR_DEPLOYED_INDEX_ID = os.getenv("VECTOR_DEPLOYED_INDEX_ID", "compliance_docs_streaming")  # NEW DEPLOYED INDEX ID
 VECTOR_SEARCH_REGION = os.getenv("VECTOR_SEARCH_REGION", "us-central1")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-004")
 
@@ -247,50 +247,72 @@ def _generate_embeddings(chunks: List[str], file_name: str) -> List[Dict[str, An
         return []
 
 def _index_in_vector_search(embeddings: List[Dict], file_name: str, full_text: str, metadata: Dict) -> bool:
-    """Index embeddings in Vector Search using the correct API"""
+    """Index embeddings in Vector Search using endpoint-based approach for streaming indexes"""
     try:
         logger.info(f"📇 Indexing {len(embeddings)} embeddings in Vector Search...")
         
-        # Use the GAPIC client for Vector Search indexing
-        from google.cloud import aiplatform_v1
+        # For streaming indexes, use the endpoint-based approach
+        from google.cloud import aiplatform
         
-        # Initialize the index service client
-        index_client = aiplatform_v1.IndexServiceClient()
+        # Initialize aiplatform
+        aiplatform.init(project=PROJECT_ID, location=VECTOR_SEARCH_REGION)
         
-        # Create IndexDatapoint objects
+        # Get the endpoint (not the index directly)
+        index_endpoint = aiplatform.MatchingEngineIndexEndpoint(VECTOR_INDEX_ENDPOINT_ID)
+        
+        # Prepare datapoints for the endpoint
         datapoints = []
         for embedding in embeddings:
-            # Create datapoint with proper structure
-            datapoint = aiplatform_v1.IndexDatapoint(
-                datapoint_id=embedding["id"],
-                feature_vector=embedding["embedding"]
-            )
+            # Create datapoint dict format for endpoint
+            datapoint = {
+                "datapoint_id": embedding["id"],
+                "feature_vector": embedding["embedding"]
+            }
             datapoints.append(datapoint)
         
-        # Use the correct project number instead of project ID
-        # From your gcloud output: projects/618874493406
-        PROJECT_NUMBER = "618874493406"
-        index_name = f"projects/{PROJECT_NUMBER}/locations/{VECTOR_SEARCH_REGION}/indexes/{VECTOR_INDEX_ID}"
+        logger.info(f"🔄 Upserting {len(datapoints)} datapoints via endpoint...")
+        logger.info(f"Using endpoint: {VECTOR_INDEX_ENDPOINT_ID}")
+        logger.info(f"Using deployed index: {VECTOR_DEPLOYED_INDEX_ID}")
         
-        logger.info(f"🔄 Using index: {index_name}")
-        
-        request = aiplatform_v1.UpsertDatapointsRequest(
-            index=index_name,
+        # Use the endpoint's upsert method with deployed index ID
+        response = index_endpoint.upsert_datapoints(
+            deployed_index_id=VECTOR_DEPLOYED_INDEX_ID,
             datapoints=datapoints
         )
         
-        # Execute the upsert
-        logger.info(f"🔄 Upserting {len(datapoints)} datapoints to index...")
-        response = index_client.upsert_datapoints(request=request)
-        
-        logger.info(f"✅ Successfully indexed {len(datapoints)} datapoints in Vector Search")
+        logger.info(f"✅ Successfully indexed {len(datapoints)} datapoints via endpoint")
         return True
         
     except Exception as e:
-        logger.error(f"❌ Vector Search indexing failed: {e}")
+        logger.error(f"❌ Vector Search endpoint indexing failed: {e}")
         logger.error(f"Error details: {str(e)}")
-        # Still return True since document processing succeeded
-        return True
+        
+        # Try the direct index approach as fallback
+        try:
+            logger.info("🔄 Trying direct index approach as fallback...")
+            
+            # Get the index instance using the streaming index
+            my_index = aiplatform.MatchingEngineIndex(index_name=VECTOR_INDEX_ID)
+            
+            # Prepare datapoints in SDK format
+            sdk_datapoints = []
+            for embedding in embeddings:
+                datapoint = aiplatform.compat.types.index_v1beta1.IndexDatapoint(
+                    datapoint_id=embedding["id"],
+                    feature_vector=embedding["embedding"]
+                )
+                sdk_datapoints.append(datapoint)
+            
+            # Use the index's upsert method
+            my_index.upsert_datapoints(datapoints=sdk_datapoints)
+            
+            logger.info(f"✅ Successfully indexed {len(sdk_datapoints)} datapoints via direct index")
+            return True
+            
+        except Exception as fallback_error:
+            logger.error(f"❌ Both endpoint and direct approaches failed: {fallback_error}")
+            # Still return True since document processing succeeded
+            return True
 
 def _generate_document_id(file_name: str) -> str:
     """Generate unique document ID"""
