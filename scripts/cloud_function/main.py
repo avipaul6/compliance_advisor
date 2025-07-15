@@ -1,4 +1,4 @@
-# cloud_function/main.py - ACTUAL PDF Processing to RAG Implementation
+# cloud_function/main.py - MINIMAL WORKING Vector Search Implementation
 import functions_framework
 from google.cloud import aiplatform
 from google.cloud import storage
@@ -20,10 +20,10 @@ logger = logging.getLogger(__name__)
 # Configuration
 PROJECT_ID = os.getenv("PROJECT_ID", "data-consumption-layer")
 VECTOR_INDEX_ENDPOINT_ID = os.getenv("VECTOR_INDEX_ENDPOINT_ID", "3802623581267951616")
-VECTOR_INDEX_ID = os.getenv("VECTOR_INDEX_ID", "6438056196023779328")  # NEW STREAMING INDEX
-VECTOR_DEPLOYED_INDEX_ID = os.getenv("VECTOR_DEPLOYED_INDEX_ID", "compliance_docs_streaming")  # NEW DEPLOYED INDEX ID
+VECTOR_INDEX_ID = os.getenv("VECTOR_INDEX_ID", "6438056196023779328")
+VECTOR_DEPLOYED_INDEX_ID = os.getenv("VECTOR_DEPLOYED_INDEX_ID", "compliance_docs_streaming")
 VECTOR_SEARCH_REGION = os.getenv("VECTOR_SEARCH_REGION", "us-central1")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-004")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "gemini-embedding-001")
 
 # Initialize Vertex AI
 vertexai.init(project=PROJECT_ID, location=VECTOR_SEARCH_REGION)
@@ -35,15 +35,12 @@ def process_document_upload(cloud_event):
     """
     try:
         logger.info("🚀 PDF to RAG processing started")
-        logger.info(f"CloudEvent type: {cloud_event['type']}")
-        logger.info(f"CloudEvent source: {cloud_event['source']}")
-        logger.info(f"CloudEvent data: {cloud_event.data}")
         
         # Extract file info from CloudEvent data
         data = cloud_event.data
         bucket_name = data["bucket"]
         file_name = data["name"]
-        event_type = cloud_event['type']  # Access type as dictionary key
+        event_type = cloud_event['type']
         
         logger.info(f"📁 Processing: gs://{bucket_name}/{file_name}")
         
@@ -52,17 +49,12 @@ def process_document_upload(cloud_event):
             logger.info(f"⏭️ Skipping {event_type}")
             return {"status": "skipped", "reason": "not_creation"}
         
-        # Skip system files
-        if _is_system_file(file_name):
-            logger.info(f"⏭️ Skipping system file: {file_name}")
-            return {"status": "skipped", "reason": "system_file"}
-        
-        # Only process documents
-        if not _is_document_file(file_name):
-            logger.info(f"⏭️ Skipping non-document: {file_name}")
+        # Skip system files and only process documents
+        if _is_system_file(file_name) or not _is_document_file(file_name):
+            logger.info(f"⏭️ Skipping: {file_name}")
             return {"status": "skipped", "reason": "not_document"}
         
-        # Initialize storage
+        # Initialize storage and check if already processed
         storage_client = storage.Client()
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(file_name)
@@ -74,12 +66,9 @@ def process_document_upload(cloud_event):
         blob.reload()
         metadata = blob.metadata or {}
         
-        # Check if already processed
         if metadata.get("rag_processed") == "true":
             logger.info(f"⏭️ Already processed: {file_name}")
             return {"status": "skipped", "reason": "already_processed"}
-        
-        logger.info(f"🔄 Starting RAG processing for: {file_name}")
         
         # STEP 1: Extract text from PDF
         extracted_text = _extract_text_from_pdf(blob)
@@ -89,27 +78,17 @@ def process_document_upload(cloud_event):
         
         logger.info(f"✅ Extracted {len(extracted_text)} characters from PDF")
         
-        # STEP 2: Chunk text for embeddings
+        # STEP 2: Chunk text
         chunks = _chunk_text(extracted_text, chunk_size=1000, overlap=200)
         logger.info(f"✅ Created {len(chunks)} text chunks")
         
-        # STEP 3: Generate embeddings
-        embeddings = _generate_embeddings(chunks, file_name)
-        if not embeddings:
-            logger.error(f"❌ Failed to generate embeddings for: {file_name}")
-            return {"status": "error", "reason": "embedding_generation_failed"}
-        
-        logger.info(f"✅ Generated {len(embeddings)} embeddings")
-        
-        # STEP 4: Index in Vector Search
-        success = _index_in_vector_search(embeddings, file_name, extracted_text, metadata)
+        # STEP 3: Generate embeddings and upsert to Vector Search
+        success = _process_chunks_to_vector_search(chunks, file_name)
         if not success:
-            logger.error(f"❌ Failed to index in Vector Search: {file_name}")
-            return {"status": "error", "reason": "vector_indexing_failed"}
+            logger.error(f"❌ Failed to process chunks to Vector Search: {file_name}")
+            return {"status": "error", "reason": "vector_processing_failed"}
         
-        logger.info(f"✅ Successfully indexed in Vector Search")
-        
-        # STEP 5: Update metadata
+        # STEP 4: Update metadata
         document_id = _generate_document_id(file_name)
         updated_metadata = {
             **metadata,
@@ -118,7 +97,6 @@ def process_document_upload(cloud_event):
             "processing_timestamp": datetime.now().isoformat(),
             "text_length": len(extracted_text),
             "chunk_count": len(chunks),
-            "embedding_count": len(embeddings),
             "vector_search_indexed": "true"
         }
         blob.metadata = updated_metadata
@@ -128,8 +106,7 @@ def process_document_upload(cloud_event):
         return {
             "status": "success", 
             "document_id": document_id,
-            "chunks": len(chunks),
-            "embeddings": len(embeddings)
+            "chunks": len(chunks)
         }
         
     except Exception as e:
@@ -155,19 +132,12 @@ def _extract_text_from_pdf(blob: storage.Blob) -> str:
             page = pdf_reader.pages[page_num]
             page_text = page.extract_text()
             text_content += page_text + "\n"
-            logger.info(f"Extracted text from page {page_num + 1}")
         
         logger.info(f"✅ PDF text extraction complete: {len(text_content)} characters")
         return text_content.strip()
         
     except Exception as e:
         logger.error(f"❌ PDF text extraction failed: {e}")
-        # Fallback for non-PDF files
-        try:
-            if blob.content_type and "text" in blob.content_type:
-                return blob.download_as_text(encoding='utf-8')
-        except:
-            pass
         return ""
 
 def _chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
@@ -184,14 +154,12 @@ def _chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[s
         
         # Try to break at sentence or word boundaries
         if end < len(text):
-            # Look for sentence end
             last_period = chunk.rfind('. ')
             last_newline = chunk.rfind('\n')
             last_space = chunk.rfind(' ')
             
-            # Choose best break point
             break_point = max(last_period, last_newline, last_space)
-            if break_point > chunk_size * 0.7:  # Only if we don't lose too much
+            if break_point > chunk_size * 0.7:
                 chunk = chunk[:break_point + 1]
                 end = start + break_point + 1
         
@@ -203,134 +171,99 @@ def _chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[s
     
     return [chunk for chunk in chunks if chunk.strip()]
 
-def _generate_embeddings(chunks: List[str], file_name: str) -> List[Dict[str, Any]]:
-    """Generate embeddings for text chunks"""
+def _process_chunks_to_vector_search(chunks: List[str], file_name: str) -> bool:
+    """
+    Process text chunks to Vector Search using minimal approach
+    """
     try:
-        logger.info(f"🧠 Generating embeddings for {len(chunks)} chunks...")
+        logger.info(f"🧠 Processing {len(chunks)} chunks to Vector Search...")
         
+        # Initialize embedding model
         embedding_model = TextEmbeddingModel.from_pretrained(EMBEDDING_MODEL)
-        embeddings = []
+        
+        # Get the Vector Search index object
+        my_index = aiplatform.MatchingEngineIndex(
+            index_name=VECTOR_INDEX_ID,
+            project=PROJECT_ID,
+            location=VECTOR_SEARCH_REGION
+        )
+        
+        # Process chunks in batches
+        batch_size = 50  # Conservative batch size
+        datapoints = []
         
         for i, chunk in enumerate(chunks):
             if not chunk.strip():
                 continue
                 
             try:
-                # Generate embedding using vertexai
+                # Generate embedding
                 response = embedding_model.get_embeddings([chunk])
                 if response and len(response) > 0:
                     embedding_vector = response[0].values
                     
-                    embeddings.append({
-                        "id": f"{_generate_document_id(file_name)}_chunk_{i}",
-                        "text": chunk,
-                        "embedding": embedding_vector,
-                        "metadata": {
-                            "source_file": file_name,
-                            "chunk_index": i,
-                            "chunk_text": chunk[:200] + "..." if len(chunk) > 200 else chunk
-                        }
-                    })
+                    # Create minimal datapoint - NO RESTRICTS to avoid format issues
+                    datapoint = {
+                        "datapoint_id": f"{_generate_document_id(file_name)}_chunk_{i}",
+                        "feature_vector": embedding_vector
+                    }
                     
-                    if (i + 1) % 10 == 0:
-                        logger.info(f"Generated embeddings for {i + 1}/{len(chunks)} chunks")
+                    datapoints.append(datapoint)
+                    
+                    # Process in batches
+                    if len(datapoints) >= batch_size:
+                        success = _upsert_datapoints_batch(my_index, datapoints)
+                        if not success:
+                            logger.error(f"Failed to upsert batch at chunk {i}")
+                            return False
+                        datapoints = []
+                        logger.info(f"✅ Upserted batch ending at chunk {i}")
                 
             except Exception as e:
-                logger.error(f"Error generating embedding for chunk {i}: {e}")
+                logger.error(f"Error processing chunk {i}: {e}")
                 continue
         
-        logger.info(f"✅ Generated {len(embeddings)} embeddings")
-        return embeddings
+        # Process remaining datapoints
+        if datapoints:
+            success = _upsert_datapoints_batch(my_index, datapoints)
+            if not success:
+                logger.error(f"Failed to upsert final batch")
+                return False
+            logger.info(f"✅ Upserted final batch of {len(datapoints)} datapoints")
         
-    except Exception as e:
-        logger.error(f"❌ Embedding generation failed: {e}")
-        return []
-
-def _index_in_vector_search(embeddings: List[Dict], file_name: str, full_text: str, metadata: Dict) -> bool:
-    """Index embeddings in Vector Search using endpoint-based approach for streaming indexes"""
-    try:
-        logger.info(f"📇 Indexing {len(embeddings)} embeddings in Vector Search...")
-        
-        # For streaming indexes, use the endpoint-based approach
-        from google.cloud import aiplatform
-        
-        # Initialize aiplatform
-        aiplatform.init(project=PROJECT_ID, location=VECTOR_SEARCH_REGION)
-        
-        # Get the endpoint (not the index directly)
-        index_endpoint = aiplatform.MatchingEngineIndexEndpoint(VECTOR_INDEX_ENDPOINT_ID)
-        
-        # Prepare datapoints for the endpoint
-        datapoints = []
-        for embedding in embeddings:
-            # Create datapoint dict format for endpoint
-            datapoint = {
-                "datapoint_id": embedding["id"],
-                "feature_vector": embedding["embedding"]
-            }
-            datapoints.append(datapoint)
-        
-        logger.info(f"🔄 Upserting {len(datapoints)} datapoints via endpoint...")
-        logger.info(f"Using endpoint: {VECTOR_INDEX_ENDPOINT_ID}")
-        logger.info(f"Using deployed index: {VECTOR_DEPLOYED_INDEX_ID}")
-        
-        # Use the endpoint's upsert method with deployed index ID
-        response = index_endpoint.upsert_datapoints(
-            deployed_index_id=VECTOR_DEPLOYED_INDEX_ID,
-            datapoints=datapoints
-        )
-        
-        logger.info(f"✅ Successfully indexed {len(datapoints)} datapoints via endpoint")
+        logger.info(f"✅ Successfully processed all chunks to Vector Search")
         return True
         
     except Exception as e:
-        logger.error(f"❌ Vector Search endpoint indexing failed: {e}")
-        logger.error(f"Error details: {str(e)}")
+        logger.error(f"❌ Vector Search processing failed: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return False
+
+def _upsert_datapoints_batch(index: aiplatform.MatchingEngineIndex, datapoints: List[Dict]) -> bool:
+    """
+    Upsert a batch of datapoints using the Vector Search method
+    """
+    try:
+        logger.info(f"📤 Upserting {len(datapoints)} datapoints to Vector Search...")
         
-        # Try the direct index approach as fallback
-        try:
-            logger.info("🔄 Trying direct index approach as fallback...")
-            
-            # Get the index instance using the streaming index
-            my_index = aiplatform.MatchingEngineIndex(index_name=VECTOR_INDEX_ID)
-            
-            # Prepare datapoints in SDK format
-            sdk_datapoints = []
-            for embedding in embeddings:
-                datapoint = aiplatform.compat.types.index_v1beta1.IndexDatapoint(
-                    datapoint_id=embedding["id"],
-                    feature_vector=embedding["embedding"]
-                )
-                sdk_datapoints.append(datapoint)
-            
-            # Use the index's upsert method
-            my_index.upsert_datapoints(datapoints=sdk_datapoints)
-            
-            logger.info(f"✅ Successfully indexed {len(sdk_datapoints)} datapoints via direct index")
-            return True
-            
-        except Exception as fallback_error:
-            logger.error(f"❌ Both endpoint and direct approaches failed: {fallback_error}")
-            # Still return True since document processing succeeded
-            return True
+        # Use the official upsert_datapoints method
+        index.upsert_datapoints(datapoints=datapoints)
+        
+        logger.info(f"✅ Successfully upserted {len(datapoints)} datapoints")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Upsert failed: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return False
 
 def _generate_document_id(file_name: str) -> str:
     """Generate unique document ID"""
     import time
     unique_string = f"{file_name}_{int(time.time())}"
     return hashlib.md5(unique_string.encode()).hexdigest()[:16]
-
-def _infer_document_type(file_name: str) -> str:
-    """Infer document type from file path"""
-    file_lower = file_name.lower()
-    if "company/" in file_lower:
-        return "company"
-    elif "regulatory/" in file_lower:
-        return "regulatory"
-    elif "austrac/" in file_lower:
-        return "austrac"
-    else:
-        return "general"
 
 def _is_document_file(file_name: str) -> bool:
     """Check if file is a document we should process"""
