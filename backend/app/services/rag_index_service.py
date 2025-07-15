@@ -63,7 +63,7 @@ class RAGIndexService:
                         metadata = blob.metadata or {}
                         
                         # Only include documents that have been processed (indexed)
-                        if metadata.get("processed") == "true":
+                        if metadata.get("rag_processed") == "true":
                             doc_info = {
                                 "id": metadata.get("unique_id", blob.name.split('/')[-1]),
                                 "name": blob.name,
